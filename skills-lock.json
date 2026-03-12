@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "react-native-design": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "2cc71a5b89cf42bac7a8442843a84486a815c00a02e67dff85781fc8a2691e1f"
+    }
+  }
+}

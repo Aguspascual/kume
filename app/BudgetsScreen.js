@@ -14,11 +14,17 @@ const BudgetsScreen = () => {
         const budgetsJSON = await AsyncStorage.getItem("presupuestos")
         const budgetsArray = budgetsJSON ? JSON.parse(budgetsJSON) : []
         const today = new Date()
+        today.setHours(0, 0, 0, 0) // Normalizar a medianoche
 
          // Filtra los presupuestos, excluyendo los "Aceptado", "Rechazado" y los que han expirado
         const updatedBudgets = budgetsArray.filter((budget) => {
                 const isRejected = budget.estado === "Rechazado"
-                const hasExpired = new Date(budget.fechaValidez) < today
+                
+                const validityDate = new Date(budget.fechaValidez)
+                validityDate.setHours(0, 0, 0, 0) // Normalizar a medianoche
+                
+                const hasExpired = validityDate < today
+                
                 // Excluir los presupuestos aceptados, rechazados y caducados.
                  return budget.estado !== "Aceptado" && !isRejected && !hasExpired
  })

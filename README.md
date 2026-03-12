@@ -1,4 +1,4 @@
-## Buscapolo
+## Küme
 
 Aplicación móvil multiplataforma (iOS, Android y Web) construida con Expo y React Native para gestionar clientes, presupuestos y trabajos del día a día de electricistas y técnicos. Permite crear presupuestos con materiales, convertirlos en trabajos agendados, visualizar el calendario semanal, enviar presupuestos por WhatsApp y realizar copias de seguridad de los datos.
 
@@ -50,7 +50,7 @@ Aplicación móvil multiplataforma (iOS, Android y Web) construida con Expo y Re
 
 ```bash
 git clone https://github.com/Aguspascua/Buscapolo.git
-cd buscapolo
+cd kume
 ```
 
 2) Instalar dependencias
@@ -92,7 +92,7 @@ En iOS/Android se solicitarán permisos en tiempo de ejecución. Si compilas bin
 ## Flujo de datos y almacenamiento
 
 - Los datos se guardan localmente en `AsyncStorage` bajo claves como `clientes`, `presupuestos` y `trabajos`.
-- Exportación/Importación crea/restaura un archivo `buscapolo_backup.json` con todo el contenido del almacenamiento local.
+- Exportación/Importación crea/restaura un archivo `kume_backup.json` con todo el contenido del almacenamiento local.
 - Notificaciones: se programa un recordatorio diario a las 22:00 y una alerta 1 hora antes de cada trabajo futuro.
 
 ## Contribución

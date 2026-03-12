@@ -1,11 +1,11 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
-import { StyleSheet, SafeAreaView, View, Text, TextInput, TouchableOpacity, FlatList, Alert, Modal } from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
-import { useRouter, useFocusEffect } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
+import AsyncStorage from "@react-native-async-storage/async-storage"
 import * as Contacts from "expo-contacts"
+import { useFocusEffect, useRouter } from "expo-router"
+import { useCallback, useEffect, useState } from "react"
+import { Alert, FlatList, Modal, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native"
 
 const UsersScreen = () => {
   const [users, setUsers] = useState([])
@@ -15,6 +15,35 @@ const UsersScreen = () => {
   const [showContactsModal, setShowContactsModal] = useState(false)
   const [filteredContacts, setFilteredContacts] = useState([])
   const [contactSearchText, setContactSearchText] = useState("")
+
+  // Estado para la alerta personalizada
+  const [alertConfig, setAlertConfig] = useState({
+      visible: false,
+      title: "",
+      message: "",
+      onConfirm: null,
+      onCancel: null,
+      confirmText: "Aceptar",
+      cancelText: null,
+      destructive: false
+  })
+
+  // Función auxiliar para mostrar alertas personalizadas
+  const showCustomAlert = (title, message, options = {}) => {
+      setAlertConfig({
+          visible: true,
+          title,
+          message,
+          onConfirm: options.onConfirm || (() => setAlertConfig(prev => ({ ...prev, visible: false }))),
+          onCancel: options.onCancel || null,
+          confirmText: options.confirmText || "Aceptar",
+          cancelText: options.cancelText || null,
+          destructive: options.destructive || false
+      })
+  }
+  const hideCustomAlert = () => {
+      setAlertConfig(prev => ({ ...prev, visible: false }))
+  }
 
   const router = useRouter()
 
@@ -26,7 +55,7 @@ const UsersScreen = () => {
       setFilteredUsers(usersArray)
     } catch (error) {
       console.error("Error al cargar los usuarios:", error)
-      Alert.alert("Error", "No se pudieron cargar los usuarios.")
+      showCustomAlert("Error", "No se pudieron cargar los usuarios.")
     }
   }
 
@@ -78,14 +107,14 @@ const UsersScreen = () => {
           setFilteredContacts(validContacts)
           setShowContactsModal(true)
         } else {
-          Alert.alert("Sin contactos", "No se encontraron contactos en el dispositivo.")
+          showCustomAlert("Sin contactos", "No se encontraron contactos en el dispositivo.")
         }
       } else {
-        Alert.alert("Permisos denegados", "Se necesitan permisos para acceder a los contactos.")
+        showCustomAlert("Permisos denegados", "Se necesitan permisos para acceder a los contactos.")
       }
     } catch (error) {
       console.error("Error al importar contactos:", error)
-      Alert.alert("Error", "No se pudieron importar los contactos.")
+      showCustomAlert("Error", "No se pudieron importar los contactos.")
     }
   }
 
@@ -126,28 +155,27 @@ const UsersScreen = () => {
       setUsers(updatedUsers)
       setFilteredUsers(updatedUsers)
 
-      Alert.alert("Eliminado", "El cliente ha sido eliminado correctamente.")
+      showCustomAlert("Eliminado", "El cliente ha sido eliminado correctamente.")
     } catch (error) {
       console.error("Error al eliminar el cliente:", error)
-      Alert.alert("Error", "No se pudo eliminar el cliente.")
+      showCustomAlert("Error", "No se pudo eliminar el cliente.")
     }
   }
 
   const confirmDelete = (user) => {
-    Alert.alert(
+    showCustomAlert(
       "Confirmar Eliminación",
       `¿Estás seguro de que quieres eliminar a ${user.nombre} ${user.apellido}?`,
-      [
-        {
-          text: "Cancelar",
-          style: "cancel",
-        },
-        {
-          text: "Eliminar",
-          onPress: () => deleteUser(user.id),
-          style: "destructive",
-        },
-      ],
+      {
+        cancelText: "Cancelar",
+        confirmText: "Eliminar",
+        destructive: true,
+        onCancel: hideCustomAlert,
+        onConfirm: () => {
+          hideCustomAlert()
+          deleteUser(user.id)
+        }
+      }
     )
   }
 
@@ -204,7 +232,7 @@ const UsersScreen = () => {
             style={styles.searchInput}
             value={searchText}
             onChangeText={setSearchText}
-            placeholder="Buscar por nombre o apellido"
+            placeholder="Buscar usuario"
             placeholderTextColor="#999"
           />
         </View>
@@ -261,6 +289,41 @@ const UsersScreen = () => {
           </View>
         </SafeAreaView>
       </Modal>
+
+      {/* Custom Alert Modal */}
+      <Modal
+          transparent={true}
+          visible={alertConfig.visible}
+          animationType="fade"
+          onRequestClose={hideCustomAlert}
+      >
+          <View style={styles.alertOverlay}>
+              <View style={styles.alertBox}>
+                  <Text style={styles.alertTitle}>{alertConfig.title}</Text>
+                  <Text style={styles.alertMessage}>{alertConfig.message}</Text>
+                  <View style={styles.alertButtons}>
+                      {alertConfig.onCancel && (
+                          <TouchableOpacity 
+                              style={[styles.alertButton, styles.alertCancelButton]} 
+                              onPress={alertConfig.onCancel}
+                          >
+                              <Text style={styles.alertCancelText}>{alertConfig.cancelText}</Text>
+                          </TouchableOpacity>
+                      )}
+                      <TouchableOpacity 
+                          style={[
+                              styles.alertButton, 
+                              styles.alertConfirmButton, 
+                              alertConfig.destructive && styles.alertDestructiveButton
+                          ]} 
+                          onPress={alertConfig.onConfirm}
+                      >
+                          <Text style={styles.alertConfirmText}>{alertConfig.confirmText}</Text>
+                      </TouchableOpacity>
+                  </View>
+              </View>
+          </View>
+      </Modal>
     </SafeAreaView>
   )
 }
@@ -282,6 +345,7 @@ const styles = StyleSheet.create({
   backButton: {
     position: "absolute",
     left: 30,
+    color: "#fff",
   },
   title: {
     fontSize: 28,
@@ -409,7 +473,7 @@ const styles = StyleSheet.create({
   },
   modalHeader: {
     padding: 20,
-    backgroundColor: "#FFEB3B",
+    backgroundColor: "#2F4550",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -418,11 +482,14 @@ const styles = StyleSheet.create({
   closeButton: {
     position: "absolute",
     left: 20,
+    top: 25,
+    color: "#FFF",
   },
   modalTitle: {
     fontSize: 24,
     fontWeight: "bold",
-    color: "#003366",
+    color: "#FFF",
+    marginBottom: 30,
   },
   modalContent: {
     flex: 1,
@@ -462,6 +529,73 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
     marginTop: 2,
+  },
+  // Custom Alert Styles
+  alertOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0, 0, 0, 0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 20,
+  },
+  alertBox: {
+      backgroundColor: "#FFF",
+      borderRadius: 15,
+      padding: 20,
+      width: "90%",
+      maxWidth: 400,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 10,
+      elevation: 5,
+  },
+  alertTitle: {
+      fontSize: 18,
+      fontWeight: "bold",
+      color: "#2F4550",
+      marginBottom: 10,
+      textAlign: "center",
+  },
+  alertMessage: {
+      fontSize: 15,
+      color: "#555",
+      marginBottom: 20,
+      textAlign: "center",
+      lineHeight: 22,
+  },
+  alertButtons: {
+      flexDirection: "row",
+      justifyContent: "space-around",
+      gap: 10,
+  },
+  alertButton: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+  },
+  alertCancelButton: {
+      backgroundColor: "#F5F7FA",
+      borderWidth: 1,
+      borderColor: "#E1E5EA",
+  },
+  alertConfirmButton: {
+      backgroundColor: "#2196F3",
+  },
+  alertDestructiveButton: {
+      backgroundColor: "#F44336",
+  },
+  alertCancelText: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: "#555",
+  },
+  alertConfirmText: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: "#FFF",
   },
 })
 

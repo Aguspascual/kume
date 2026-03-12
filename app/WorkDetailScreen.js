@@ -46,6 +46,38 @@ const WorkDetailScreen = () => {
   })
   const [newWorkPrice, setNewWorkPrice] = useState((Number.parseFloat(trabajo.costoManoDeObra) || 0).toString())
 
+  const [alertConfig, setAlertConfig] = useState({
+    visible: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+    onCancel: null,
+    confirmText: "Aceptar",
+    cancelText: null,
+    destructive: false,
+  })
+
+  const showCustomAlert = (title, message, options = {}) => {
+    setAlertConfig({
+      visible: true,
+      title,
+      message,
+      onConfirm: options.onConfirm || (() => setAlertConfig((prev) => ({ ...prev, visible: false }))),
+      onCancel: options.onCancel || null,
+      confirmText: options.confirmText || "Aceptar",
+      cancelText: options.cancelText || null,
+      destructive: options.destructive || false,
+    })
+  }
+
+  const hideCustomAlert = () => {
+    setAlertConfig((prev) => ({ ...prev, visible: false }))
+  }
+
+  const formatCurrency = (amount) => {
+    return Math.round(Number(amount) || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")
+  }
+
   // Calcula el costo total basado en los materiales y la mano de obra del objeto de trabajo
   const costoTotal =
     (Number.parseFloat(trabajo.costoMateriales) || 0) + (Number.parseFloat(trabajo.costoManoDeObra) || 0)
@@ -109,6 +141,7 @@ const WorkDetailScreen = () => {
     switch (estado) {
       case "Pagado":
         return "#4CAF50"
+      case "Terminado, falta pago":
       case "Pendiente":
         return "#FF9800"
       case "Cancelado":
@@ -122,6 +155,7 @@ const WorkDetailScreen = () => {
     switch (estado) {
       case "Pagado":
         return "checkmark-circle"
+      case "Terminado, falta pago":
       case "Pendiente":
         return "time"
       case "Cancelado":
@@ -132,11 +166,6 @@ const WorkDetailScreen = () => {
   }
 
   const cambiarEstadoPago = async (nuevoEstado) => {
-    if (nuevoEstado === "Cancelado") {
-      setReprogramModalVisible(true)
-      return
-    }
-
     try {
       const trabajosJSON = await AsyncStorage.getItem("trabajos")
       const trabajos = trabajosJSON ? JSON.parse(trabajosJSON) : []
@@ -145,11 +174,64 @@ const WorkDetailScreen = () => {
 
       await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosActualizados))
       setTrabajo({ ...trabajo, estadoPago: nuevoEstado })
-      Alert.alert("Éxito", `Estado de pago cambiado a "${nuevoEstado}"`)
+      showCustomAlert("Éxito", `Estado de pago cambiado a "${nuevoEstado}"`)
     } catch (error) {
       console.error("Error al cambiar estado de pago:", error)
-      Alert.alert("Error", "No se pudo cambiar el estado de pago")
+      showCustomAlert("Error", "No se pudo cambiar el estado de pago")
     }
+  }
+
+  const handleMarcarPagado = () => {
+    showCustomAlert(
+      "Confirmar Pago",
+      "¿Estás seguro que deseas marcar este trabajo como pagado?",
+      {
+        cancelText: "Cancelar",
+        confirmText: "Marcar como Pagado",
+        onCancel: hideCustomAlert,
+        onConfirm: () => {
+          hideCustomAlert()
+          cambiarEstadoPago("Pagado")
+        }
+      }
+    )
+  }
+
+  const handleTerminarTrabajo = () => {
+    showCustomAlert(
+      "Trabajo Terminado",
+      "¿El trabajo ya fue abonado por el cliente?",
+      {
+        cancelText: "No, quedó pendiente",
+        confirmText: "Sí, cobrado",
+        onCancel: () => {
+          hideCustomAlert()
+          cambiarEstadoPago("Terminado, falta pago")
+        },
+        onConfirm: () => {
+          hideCustomAlert()
+          cambiarEstadoPago("Pagado")
+        }
+      }
+    )
+  }
+
+  const handleMarcarCancelado = () => {
+    showCustomAlert(
+      "Confirmar Cancelado",
+      "¿Estás seguro que deseas marcar este trabajo como cancelado?",
+      {
+        cancelText: "Volver",
+        confirmText: "Cancelar Trabajo",
+        destructive: true,
+        onCancel: hideCustomAlert,
+        onConfirm: () => {
+          hideCustomAlert()
+          cambiarEstadoPago("Cancelado")
+          setReprogramModalVisible(true)
+        }
+      }
+    )
   }
 
   const handleReprogramar = () => {
@@ -166,15 +248,16 @@ const WorkDetailScreen = () => {
       const trabajosActualizados = trabajos.filter((t) => t.id !== trabajo.id)
 
       await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosActualizados))
-      Alert.alert("Trabajo eliminado", "El trabajo ha sido eliminado correctamente.", [
-        {
-          text: "OK",
-          onPress: () => router.back(),
-        },
-      ])
+      showCustomAlert("Trabajo eliminado", "El trabajo ha sido eliminado correctamente.", {
+        confirmText: "OK",
+        onConfirm: () => {
+          hideCustomAlert()
+          router.back()
+        }
+      })
     } catch (error) {
       console.error("Error al eliminar trabajo:", error)
-      Alert.alert("Error", "No se pudo eliminar el trabajo")
+      showCustomAlert("Error", "No se pudo eliminar el trabajo")
     }
   }
 
@@ -203,13 +286,13 @@ const WorkDetailScreen = () => {
 
         await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosActualizados))
         setTrabajo({ ...trabajo, fecha: updatedDate.toISOString(), estadoPago: "Pendiente" })
-        Alert.alert(
+        showCustomAlert(
           "Trabajo reprogramado",
-          `El trabajo ha sido reprogramado para el ${format(updatedDate, "dd/MM/yyyy 'a las' HH:mm", { locale: es })}`,
+          `El trabajo ha sido reprogramado para el ${format(updatedDate, "dd/MM/yyyy 'a las' HH:mm", { locale: es })}`
         )
       } catch (error) {
         console.error("Error al reprogramar trabajo:", error)
-        Alert.alert("Error", "No se pudo reprogramar el trabajo")
+        showCustomAlert("Error", "No se pudo reprogramar el trabajo")
       }
     }
   }
@@ -227,17 +310,19 @@ const WorkDetailScreen = () => {
     }
   }
 
-  // Maneja la adición de un material
   const handleAddMaterial = async () => {
-    if (!newMaterial.descripcion || !newMaterial.cantidad || !newMaterial.precio) {
-      Alert.alert("Error", "Por favor, completa todos los campos del material.")
+    const rawCantidad = newMaterial.cantidad.replace(/\./g, "")
+    const rawPrecio = newMaterial.precio.replace(/\./g, "")
+
+    if (!newMaterial.descripcion || !rawCantidad || !rawPrecio) {
+      showCustomAlert("Error", "Por favor, completa todos los campos del material.")
       return
     }
 
     const materialToAdd = {
       descripcion: newMaterial.descripcion,
-      cantidad: Number(newMaterial.cantidad),
-      precio: Number(newMaterial.precio),
+      cantidad: Number(rawCantidad),
+      precio: Number(rawPrecio),
     }
 
     const nuevosMateriales = [...(trabajo.materiales || []), materialToAdd]
@@ -267,20 +352,24 @@ const WorkDetailScreen = () => {
       const trabajos = trabajosJSON ? JSON.parse(trabajosJSON) : []
       const trabajosGuardados = trabajos.map((t) => (t.id === trabajo.id ? trabajoActualizado : t))
       await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosGuardados))
-      Alert.alert("Éxito", "Material agregado correctamente y costos actualizados.")
+      showCustomAlert("Éxito", "Material agregado correctamente y costos actualizados.")
     } catch (error) {
       console.error("Error al agregar material:", error)
-      Alert.alert("Error", "No se pudo agregar el material.")
+      showCustomAlert("Error", "No se pudo agregar el material.")
     }
   }
 
-  // Maneja la eliminación de un material
   const handleDeleteMaterial = async (indexToDelete) => {
-    Alert.alert("Confirmar Eliminación", "¿Estás seguro de que quieres eliminar este material?", [
-      { text: "Cancelar", style: "cancel" },
+    showCustomAlert(
+      "Confirmar Eliminación",
+      "¿Estás seguro de que quieres eliminar este material?",
       {
-        text: "Eliminar",
-        onPress: async () => {
+        cancelText: "Cancelar",
+        confirmText: "Eliminar",
+        destructive: true,
+        onCancel: hideCustomAlert,
+        onConfirm: async () => {
+          hideCustomAlert()
           const nuevosMateriales = trabajo.materiales.filter((_, index) => index !== indexToDelete)
 
           const nuevoCostoMateriales = nuevosMateriales.reduce(
@@ -302,14 +391,14 @@ const WorkDetailScreen = () => {
             const trabajos = trabajosJSON ? JSON.parse(trabajosJSON) : []
             const trabajosGuardados = trabajos.map((t) => (t.id === trabajo.id ? trabajoActualizado : t))
             await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosGuardados))
-            Alert.alert("Éxito", "Material eliminado correctamente y costos actualizados.")
+            showCustomAlert("Éxito", "Material eliminado correctamente y costos actualizados.")
           } catch (error) {
             console.error("Error al eliminar material y actualizar el trabajo:", error)
-            Alert.alert("Error", "No se pudo eliminar el material.")
+            showCustomAlert("Error", "No se pudo eliminar el material.")
           }
-        },
-      },
-    ])
+        }
+      }
+    )
   }
 
   // NUEVO: Función para guardar el domicilio editado
@@ -322,10 +411,10 @@ const WorkDetailScreen = () => {
       await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosGuardados))
       setTrabajo(trabajoActualizado)
       setIsEditingAddress(false)
-      Alert.alert("Éxito", "Domicilio actualizado correctamente.")
+      showCustomAlert("Éxito", "Domicilio actualizado correctamente.")
     } catch (error) {
       console.error("Error al actualizar el domicilio:", error)
-      Alert.alert("Error", "No se pudo actualizar el domicilio.")
+      showCustomAlert("Error", "No se pudo actualizar el domicilio.")
     }
   }
 
@@ -344,19 +433,19 @@ const WorkDetailScreen = () => {
         if (supported) {
           Linking.openURL(whatsappURL)
         } else {
-          Alert.alert("Error", "WhatsApp no está instalado en este dispositivo.")
+          showCustomAlert("Error", "WhatsApp no está instalado en este dispositivo.")
         }
       })
     }
   }
 
-  // NUEVO: Maneja la actualización del precio de mano de obra
   const handleUpdateWorkPrice = async () => {
-    if (newWorkPrice === "" || isNaN(Number(newWorkPrice))) {
-      Alert.alert("Error", "Por favor, ingrese un precio válido.")
+    const rawPrice = newWorkPrice.replace(/\./g, "")
+    if (rawPrice === "" || isNaN(Number(rawPrice))) {
+      showCustomAlert("Error", "Por favor, ingrese un precio válido.")
       return
     }
-    const costoManoDeObraActualizado = Number(newWorkPrice)
+    const costoManoDeObraActualizado = Number(rawPrice)
 
     const trabajoActualizado = {
       ...trabajo,
@@ -372,10 +461,10 @@ const WorkDetailScreen = () => {
       const trabajos = trabajosJSON ? JSON.parse(trabajosJSON) : []
       const trabajosGuardados = trabajos.map((t) => (t.id === trabajo.id ? trabajoActualizado : t))
       await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosGuardados))
-      Alert.alert("Éxito", "Precio del trabajo actualizado correctamente.")
+      showCustomAlert("Éxito", "Precio del trabajo actualizado correctamente.")
     } catch (error) {
       console.error("Error al actualizar el precio del trabajo:", error)
-      Alert.alert("Error", "No se pudo actualizar el precio del trabajo.")
+      showCustomAlert("Error", "No se pudo actualizar el precio del trabajo.")
     }
   }
 
@@ -404,10 +493,10 @@ const WorkDetailScreen = () => {
       <View style={styles.materialDetails}>
         <Text style={styles.materialQuantity}>Cantidad: {item.cantidad}</Text>
         <Text style={styles.materialPrice}>
-          Precio c/u: ${Number.parseFloat(item.precio).toFixed(2)}
+          Precio c/u: ${formatCurrency(item.precio)}
         </Text>
         <Text style={styles.materialSubtotal}> Subtotal: $ 
-          {(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio)).toFixed(2)}
+          {formatCurrency(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio))}
         </Text>
       </View>
     </View>
@@ -419,7 +508,7 @@ const WorkDetailScreen = () => {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back-outline" size={28} color="#fff" />
         </TouchableOpacity>
-         <Text style={styles.title}>Detalles del Trabajo</Text>
+         <Text style={styles.title}>Trabajo</Text>
       </View>
       
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -436,16 +525,27 @@ const WorkDetailScreen = () => {
                     size={20}
                     color={getEstadoPagoColor(trabajo.estadoPago)}
                   />  
-                  <Text style={[styles.estadoText, { color: getEstadoPagoColor(trabajo.estadoPago) }]}>
+                  <Text style={[styles.estadoText, { color: getEstadoPagoColor(trabajo.estadoPago), marginLeft: 5 }]}>
                     {trabajo.estadoPago || "Pendiente"}  
                   </Text>
                 </View>
               </View>
               <View style={styles.botonesContainer}>
-                {trabajo.estadoPago !== "Pagado" && (
+                {trabajo.estadoPago !== "Pagado" && trabajo.estadoPago !== "Terminado, falta pago" && (
                   <TouchableOpacity
                     style={[styles.estadoButton, styles.estadoButtonSuccess]}
-                    onPress={() => cambiarEstadoPago("Pagado")}
+                    onPress={handleTerminarTrabajo}
+                    activeOpacity={0.8}
+                  >
+                        <Ionicons name="checkmark-circle" size={24} color="white" />   
+                    <Text style={styles.estadoButtonText}>Terminado</Text>  
+                  </TouchableOpacity>
+                )}
+                 
+                {trabajo.estadoPago === "Terminado, falta pago" && (
+                  <TouchableOpacity
+                    style={[styles.estadoButton, styles.estadoButtonSuccess]}
+                    onPress={handleMarcarPagado}
                     activeOpacity={0.8}
                   >
                         <Ionicons name="checkmark-circle" size={24} color="white" />   
@@ -453,10 +553,10 @@ const WorkDetailScreen = () => {
                   </TouchableOpacity>
                 )}
                  
-                {trabajo.estadoPago !== "Cancelado" && trabajo.estadoPago !== "Pagado" && (
+                {trabajo.estadoPago !== "Cancelado" && trabajo.estadoPago !== "Pagado" && trabajo.estadoPago !== "Terminado, falta pago" && (
                   <TouchableOpacity
                     style={[styles.estadoButton, styles.estadoButtonDanger]}
-                    onPress={() => cambiarEstadoPago("Cancelado")}
+                    onPress={handleMarcarCancelado}
                     activeOpacity={0.8}
                   >
                         <Ionicons name="close-circle" size={24} color="white" />   
@@ -508,11 +608,19 @@ const WorkDetailScreen = () => {
             </View>
           </View>
            
-          <View style={styles.detailItem}>
-            <Text style={styles.label}>Fecha:</Text>
-            <Text style={styles.value}>
-              {format(new Date(trabajo.fecha), "HH:mm dd MMMM", { locale: es })}
-            </Text>
+          <View style={[styles.detailItem, styles.dateDetailItem]}>
+            <View style={styles.dateIconContainer}>
+               <Ionicons name="calendar" size={32} color="#2F4550" />
+            </View>
+            <View style={styles.dateTextContainer}>
+              <Text style={styles.dateLabel}>Fecha Programada:</Text>
+              <Text style={styles.dateValue}>
+                {format(new Date(trabajo.fecha), "EEEE dd 'de' MMMM", { locale: es })}
+              </Text>
+              <Text style={styles.timeValue}>
+                {format(new Date(trabajo.fecha), "HH:mm 'hs'", { locale: es })}
+              </Text>
+            </View>
           </View>
            
           <View style={styles.detailItem}>
@@ -543,20 +651,22 @@ const WorkDetailScreen = () => {
           <View style={styles.costosSection}>
             <View style={styles.costoItem}>
               <Text style={styles.costoLabel}>Costo de Materiales:</Text>
-              <Text style={styles.costoValueMateriales}>${(Number.parseFloat(trabajo.costoMateriales) || 0).toFixed(2)}</Text>
+              <Text style={styles.costoValue}>${formatCurrency(trabajo.costoMateriales)}</Text>
             </View>
 
             <View style={styles.costoItem}>
               <Text style={styles.costoLabel}>Costo de Mano de Obra:</Text>
-              <TouchableOpacity onPress={() => setShowEditPriceModal(true)} style={styles.editPriceButton}>
-                <Text style={styles.costoValueManoObra}>${(Number.parseFloat(trabajo.costoManoDeObra) || 0).toFixed(2)}</Text>
-                <Ionicons name="pencil-outline" size={16} color="#2F4550" style={{ marginLeft: 5 }} />
-              </TouchableOpacity>
+              <View style={styles.manoDeObraContainer}>
+                <Text style={styles.costoValue}>${formatCurrency(trabajo.costoManoDeObra)}</Text>
+                <TouchableOpacity onPress={() => setShowEditPriceModal(true)} style={styles.editPriceIconBtn}>
+                  <Ionicons name="pencil" size={18} color="#2F4550" />
+                </TouchableOpacity>
+              </View>
             </View>
 
             <View style={[styles.costoItem, styles.totalFinal]}>
               <Text style={styles.totalLabel}>Costo Total:</Text>
-              <Text style={styles.totalValue}>${costoTotal.toFixed(2)}</Text>
+              <Text style={styles.totalValue}>${formatCurrency(costoTotal)}</Text>
             </View>
           </View>
            {/* Fotos del trabajo */}
@@ -597,14 +707,14 @@ const WorkDetailScreen = () => {
           <View style={styles.addMaterialModalContent}>
             <Text style={styles.modalTitle}>Agregar Material</Text>
             <TextInput style={styles.input} placeholder="Descripción del material" value={newMaterial.descripcion} onChangeText={(text) => setNewMaterial({ ...newMaterial, descripcion: text })} />
-            <TextInput style={styles.input} placeholder="Cantidad" value={newMaterial.cantidad} onChangeText={(text) => setNewMaterial({ ...newMaterial, cantidad: text })} keyboardType="numeric" />
-            <TextInput style={styles.input} placeholder="Precio por unidad" value={newMaterial.precio} onChangeText={(text) => setNewMaterial({ ...newMaterial, precio: text })} keyboardType="numeric"/>
+            <TextInput style={styles.input} placeholder="Cantidad" value={newMaterial.cantidad} onChangeText={(text) => setNewMaterial({ ...newMaterial, cantidad: formatCurrency(text.replace(/\D/g, '')) })} keyboardType="numeric" />
+            <TextInput style={styles.input} placeholder="Precio por unidad" value={newMaterial.precio} onChangeText={(text) => setNewMaterial({ ...newMaterial, precio: formatCurrency(text.replace(/\D/g, '')) })} keyboardType="numeric"/>
             <TouchableOpacity style={styles.addButtonModal} onPress={handleAddMaterial}>
                <Ionicons name="add-circle" size={24} color="white" /> 
               <Text style={styles.addButtonModalText}>Guardar Material</Text> 
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowAddMaterialModal(false)}>
-              <Text style={styles.cancelButtonText}>Cancelar</Text>
+            <TouchableOpacity style={styles.cancelModalButton} onPress={() => setShowAddMaterialModal(false)}>
+              <Text style={styles.cancelModalButtonText}>Cancelar</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -614,13 +724,13 @@ const WorkDetailScreen = () => {
         <View style={styles.modalContainer}>
           <View style={styles.addMaterialModalContent}>
             <Text style={styles.modalTitle}>Editar Precio de Mano de Obra</Text>
-            <TextInput style={styles.input} placeholder="Nuevo precio" value={newWorkPrice} onChangeText={setNewWorkPrice} keyboardType="numeric"/> 
+            <TextInput style={styles.input} placeholder="Nuevo precio" value={newWorkPrice} onChangeText={(text) => setNewWorkPrice(formatCurrency(text.replace(/\D/g, "")))} keyboardType="numeric"/> 
             <TouchableOpacity style={styles.addButtonModal} onPress={handleUpdateWorkPrice}>
               <Ionicons name="save-outline" size={24} color="white" />
               <Text style={styles.addButtonModalText}>Guardar Precio</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowEditPriceModal(false)}>
-               <Text style={styles.cancelButtonText}>Cancelar</Text>
+            <TouchableOpacity style={styles.cancelModalButton} onPress={() => setShowEditPriceModal(false)}>
+               <Text style={styles.cancelModalButtonText}>Cancelar</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -665,6 +775,33 @@ const WorkDetailScreen = () => {
           </View>
         </View>
       </Modal>
+
+      {/* CUSTOM ALERT MODAL */}
+      <Modal visible={alertConfig.visible} transparent={true} animationType="fade" onRequestClose={hideCustomAlert}>
+        <View style={styles.alertOverlay}>
+          <View style={styles.alertBox}>
+            <Text style={styles.alertTitle}>{alertConfig.title}</Text>
+            <Text style={styles.alertMessage}>{alertConfig.message}</Text>
+            <View style={styles.alertButtons}>
+              {alertConfig.cancelText && (
+                <TouchableOpacity style={[styles.alertButton, styles.alertCancelButton]} onPress={alertConfig.onCancel}>
+                  <Text style={styles.alertCancelText}>{alertConfig.cancelText}</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[
+                  styles.alertButton,
+                  alertConfig.destructive ? styles.alertDestructiveButton : styles.alertConfirmButton,
+                ]}
+                onPress={alertConfig.onConfirm}
+              >
+                <Text style={styles.alertConfirmText}>{alertConfig.confirmText}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   )
 }
@@ -733,14 +870,13 @@ const styles = StyleSheet.create({
   },
   estadoInfo: {
     marginBottom: 15,
-    display: "flex",
-    flexDirection: "row",
-    alignItems: "center",
   },
   estadoBadge: {
     flexDirection: "row",
     alignItems: "center",
-    paddingLeft: 20,
+    paddingLeft: 10,
+    flex: 1,
+    flexWrap: "wrap",
   },
   estadoText: {
     fontSize: 18,
@@ -1113,8 +1249,204 @@ const styles = StyleSheet.create({
   },
   modalContainer: {
     flex: 1,
-    top: 300,
-    left: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.8)",
+  },
+  modalTitle: {
+    marginBottom: 20,
+    textAlign: "center",
+    fontSize: 20,
+    fontWeight: "700",
+  },
+  imageModalContainer: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.95)",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingTop: 50,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  modalCloseButton: {
+    padding: 10,
+  },
+  modalImageContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    position: "relative",
+  },
+  modalImage: {
+    width: Dimensions.get("window").width,
+    height: Dimensions.get("window").height * 0.7,
+  },
+  navButton: {
+    position: "absolute",
+    top: "50%",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 25,
+    padding: 15,
+    marginTop: -25,
+  },
+  prevButton: {
+    left: 20,
+  },
+  nextButton: {
+    right: 20,
+  },
+  addMaterialModalContent: {
+    backgroundColor: "#FFF", 
+    borderRadius: 20,
+    padding: 25, // Updated padding
+    width: "90%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 }, 
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  input: {
+    width: "100%",
+    backgroundColor: "#F5F7FA", 
+    borderRadius: 12, 
+    padding: 16, 
+    marginBottom: 20, 
+    fontSize: 16,
+    color: "#2F4550",
+    borderWidth: 1,
+    borderColor: "#E1E5EA", 
+  },
+  addButtonModal: {
+    backgroundColor: "#2F4550", 
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 18, 
+    paddingHorizontal: 30,
+    borderRadius: 12,
+    marginBottom: 15,
+    width: "100%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 }, 
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  addButtonModalText: {
+    color: "white",
+    fontSize: 18,
+    fontWeight: "600",
+    marginLeft: 10,
+  },
+  phoneContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  phoneIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  phoneButton: {
+    marginLeft: 10,
+  },
+  editableContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  editableInput: {
+    flex: 1,
+    backgroundColor: "#F5F7FA",
+    borderRadius: 12,
+    padding: 16,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "#E1E5EA",
+  },
+  saveButton: {
+    padding: 10,
+    borderRadius: 20,
+    backgroundColor: "transparent",
+  },
+  modalContainerReprogramar:{
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+
+  },
+  modalContentReprogramar:{
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 25,
+    width: "90%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+    alignItems: "center",
+  },
+  modalTitleReprogramar:{
+    marginBottom: 10,
+    textAlign: "center",
+    fontSize: 20,
+    fontWeight: "700",
+  },
+  confirmButtonReprogramar:{
+    backgroundColor: "#2F4550", 
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 30,
+    borderRadius: 12,
+    marginBottom: 15,
+    width: "100%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  confirmButtonTextReprogrmar:{
+    color: "white",
+    fontSize: 18,
+    fontWeight: "600",  
+    marginLeft: 10,
+  },
+  deleteButtonReprogramar:{
+    backgroundColor: "red",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 30,
+    borderRadius: 12,
+    marginBottom: 15,
+    width: "100%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  deleteButtonTextEliminar:{
+    color: "white",
+    fontSize: 18,
+    fontWeight: "600",
+    marginLeft: 10,
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.8)",
   },
   modalTitle: {
     marginBottom: 20,
@@ -1225,6 +1557,138 @@ const styles = StyleSheet.create({
     color: "#888",
     fontStyle: "italic",
     marginTop: 10,
+  },
+  cancelModalButton: {
+    backgroundColor: "#F44336",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 18,
+    paddingHorizontal: 30,
+    borderRadius: 12,
+    marginBottom: 0,
+    width: "100%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  cancelModalButtonText: {
+    color: "white",
+    fontSize: 18,
+    fontWeight: "600",
+    textAlign: "center"
+  },
+  dateDetailItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 20,
+  },
+  dateIconContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "#E8EDF2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 15,
+  },
+  dateTextContainer: {
+    flex: 1,
+  },
+  dateLabel: {
+    fontSize: 16,
+    color: "#666",
+    marginBottom: 4,
+  },
+  dateValue: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#2F4550",
+    textTransform: "capitalize",
+    marginBottom: 2,
+  },
+  timeValue: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#4CAF50",
+  },
+  manoDeObraContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  editPriceIconBtn: {
+    marginLeft: 10,
+    padding: 4,
+    backgroundColor: "#E8EDF2",
+    borderRadius: 8,
+  },
+  alertOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0, 0, 0, 0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 20,
+  },
+  alertBox: {
+      backgroundColor: "#FFF",
+      borderRadius: 15,
+      padding: 20,
+      width: "90%",
+      maxWidth: 400,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 10,
+      elevation: 5,
+  },
+  alertTitle: {
+      fontSize: 18,
+      fontWeight: "bold",
+      color: "#2F4550",
+      marginBottom: 10,
+      textAlign: "center",
+  },
+  alertMessage: {
+      fontSize: 15,
+      color: "#555",
+      marginBottom: 20,
+      textAlign: "center",
+      lineHeight: 22,
+  },
+  alertButtons: {
+      flexDirection: "row",
+      justifyContent: "space-around",
+      gap: 10,
+  },
+  alertButton: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+  },
+  alertCancelButton: {
+      backgroundColor: "#F5F7FA",
+      borderWidth: 1,
+      borderColor: "#E1E5EA",
+  },
+  alertConfirmButton: {
+      backgroundColor: "#2196F3",
+  },
+  alertDestructiveButton: {
+      backgroundColor: "#F44336",
+  },
+  alertCancelText: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: "#555",
+  },
+  alertConfirmText: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: "#FFF",
   },
 })
 

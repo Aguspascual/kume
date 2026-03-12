@@ -1,12 +1,12 @@
-import { useState, useEffect, useCallback } from "react"
-import { ScrollView, StyleSheet, SafeAreaView, View, Text, TextInput, TouchableOpacity, Alert, FlatList, Modal, Platform, KeyboardAvoidingView, Image } from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
-import { useRouter, useFocusEffect } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
+import AsyncStorage from "@react-native-async-storage/async-storage"
 import DateTimePicker from "@react-native-community/datetimepicker"
-import * as ImagePicker from "expo-image-picker"
 import * as FileSystem from "expo-file-system"
+import * as ImagePicker from "expo-image-picker"
 import * as Linking from "expo-linking"
+import { useFocusEffect, useRouter } from "expo-router"
+import { useCallback, useEffect, useState } from "react"
+import { Alert, FlatList, Image, KeyboardAvoidingView, Modal, Platform, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native"
 
 const NewWorkScreen = () => {
   // Estados para almacenar los datos del formulario y la UI
@@ -26,8 +26,39 @@ const NewWorkScreen = () => {
   const [isWorkTypeModalVisible, setWorkTypeModalVisible] = useState(false)
   const [photos, setPhotos] = useState([]) // Nuevo estado para las fotos
 
-  // Opciones predefinidas para el tipo de trabajo
-  const workTypes = ["Aire", "Electricidad", "Cámara"]
+  // Estado y opciones para el tipo de trabajo
+  const [workTypes, setWorkTypes] = useState([])
+  const [newWorkType, setNewWorkType] = useState("")
+  const [editingWorkTypeIndex, setEditingWorkTypeIndex] = useState(null)
+
+  // Estado para la alerta personalizada
+  const [alertConfig, setAlertConfig] = useState({
+      visible: false,
+      title: "",
+      message: "",
+      onConfirm: null,
+      onCancel: null,
+      confirmText: "Aceptar",
+      cancelText: null,
+      destructive: false
+  })
+
+  // Función auxiliar para mostrar alertas personalizadas
+  const showCustomAlert = (title, message, options = {}) => {
+      setAlertConfig({
+          visible: true,
+          title,
+          message,
+          onConfirm: options.onConfirm || (() => setAlertConfig(prev => ({ ...prev, visible: false }))),
+          onCancel: options.onCancel || null,
+          confirmText: options.confirmText || "Aceptar",
+          cancelText: options.cancelText || null,
+          destructive: options.destructive || false
+      })
+  }
+  const hideCustomAlert = () => {
+      setAlertConfig(prev => ({ ...prev, visible: false }))
+  }
 
   // Hook de navegación de expo-router
   const router = useRouter()
@@ -41,14 +72,27 @@ const NewWorkScreen = () => {
       setFilteredClientes(clientesArray)
     } catch (error) {
       console.error("Error al cargar clientes:", error)
-      Alert.alert("Error", "No se pudieron cargar los clientes.")
+      showCustomAlert("Error", "No se pudieron cargar los clientes.")
     }
   }
 
-  // useFocusEffect para cargar clientes cada vez que la pantalla esté enfocada
+  // Función para obtener los tipos de trabajo de AsyncStorage
+  const fetchWorkTypes = async () => {
+    try {
+      const workTypesJSON = await AsyncStorage.getItem("tiposTrabajo")
+      if (workTypesJSON) {
+        setWorkTypes(JSON.parse(workTypesJSON))
+      }
+    } catch (error) {
+      console.error("Error al cargar tipos de trabajo:", error)
+    }
+  }
+
+  // useFocusEffect para cargar clientes y tipos de trabajo cada vez que la pantalla esté enfocada
   useFocusEffect(
     useCallback(() => {
       fetchClients()
+      fetchWorkTypes()
     }, []),
   )
 
@@ -79,50 +123,111 @@ const NewWorkScreen = () => {
     setWorkTypeModalVisible(false)
   }
 
+  // Manejador para agregar o editar un tipo de trabajo
+  const handleAddWorkType = async () => {
+    const typeToAdd = newWorkType.trim()
+    if (typeToAdd === "") {
+      showCustomAlert("Error", "Por favor ingresa un nombre para el tipo de trabajo.")
+      return
+    }
+
+    if (editingWorkTypeIndex === null && workTypes.includes(typeToAdd)) {
+      showCustomAlert("Aviso", "Este tipo de trabajo ya existe.")
+      return
+    }
+
+    try {
+      let updatedWorkTypes = [...workTypes]
+      if (editingWorkTypeIndex !== null) {
+        updatedWorkTypes[editingWorkTypeIndex] = typeToAdd
+      } else {
+        updatedWorkTypes.push(typeToAdd)
+      }
+
+      setWorkTypes(updatedWorkTypes)
+      await AsyncStorage.setItem("tiposTrabajo", JSON.stringify(updatedWorkTypes))
+      setNewWorkType("")
+      setEditingWorkTypeIndex(null)
+      
+      // Si el cliente estaba seleccionando el tipo que ahora fue editado
+      if (editingWorkTypeIndex !== null && tipoTrabajo === workTypes[editingWorkTypeIndex]) {
+          setTipoTrabajo(typeToAdd)
+      } else if (editingWorkTypeIndex === null) {
+          setTipoTrabajo(typeToAdd)
+          setWorkTypeModalVisible(false) // Solo cierra si no es edición
+      }
+
+    } catch (error) {
+      console.error("Error al guardar tipo de trabajo:", error)
+      showCustomAlert("Error", "No se pudo guardar el tipo de trabajo.")
+    }
+  }
+
+  // Manejador para preparar la edicién de un tipo de trabajo
+  const startEditingWorkType = (index) => {
+    setNewWorkType(workTypes[index])
+    setEditingWorkTypeIndex(index)
+  }
+
+  // Manejador para eliminar un tipo de trabajo
+  const handleDeleteWorkType = (index) => {
+    showCustomAlert(
+      "Eliminar Tipo de Trabajo",
+      "¿Estás seguro que deseas eliminar este tipo de trabajo?",
+      {
+        cancelText: "Cancelar",
+        confirmText: "Eliminar",
+        destructive: true,
+        onCancel: hideCustomAlert,
+        onConfirm: async () => {
+          try {
+            const updatedWorkTypes = workTypes.filter((_, i) => i !== index)
+            setWorkTypes(updatedWorkTypes)
+            await AsyncStorage.setItem("tiposTrabajo", JSON.stringify(updatedWorkTypes))
+            
+            // Si se eliminó el que el usuario ya tenía marcado:
+            if (tipoTrabajo === workTypes[index]) {
+              setTipoTrabajo(null)
+            }
+            hideCustomAlert()
+          } catch (error) {
+            console.error("Error al eliminar tipo de trabajo:", error)
+            hideCustomAlert()
+            setTimeout(() => showCustomAlert("Error", "No se pudo eliminar el tipo de trabajo."), 500)
+          }
+        }
+      }
+    )
+  }
+
   // Función para abrir la galería o la cámara y seleccionar una imagen
   const handlePickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (status !== "granted") {
-      Alert.alert("Permiso denegado", "Necesitamos permiso para acceder a la galería de fotos.")
+      showCustomAlert("Permiso denegado", "Necesitamos permiso para acceder a la galería de fotos.")
       return
     }
 
-    Alert.alert("Seleccionar Foto", "¿Deseas tomar una foto o seleccionar una de la galería?", [
-      {
-        text: "Tomar Foto",
-        onPress: async () => {
-          const cameraPermission = await ImagePicker.requestCameraPermissionsAsync()
-          if (cameraPermission.status !== "granted") {
-            Alert.alert("Permiso denegado", "Necesitamos permiso para usar la cámara.")
-            return
-          }
-          const result = await ImagePicker.launchCameraAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            quality: 0.5,
-          })
-          if (!result.canceled) {
-            setPhotos((prevPhotos) => [...prevPhotos, ...result.assets])
-          }
-        },
-      },
-      {
-        text: "Seleccionar de Galería",
-        onPress: async () => {
-          const result = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            quality: 0.5,
-            allowsMultipleSelection: true,
-          })
-          if (!result.canceled) {
-            setPhotos((prevPhotos) => [...prevPhotos, ...result.assets])
-          }
-        },
-      },
-      {
-        text: "Cancelar",
-        style: "cancel",
-      },
-    ])
+    showCustomAlert("Seleccionar Foto", "¿Deseas tomar una foto o seleccionar una de la galería?", {
+        confirmText: "Tomar Foto",
+        cancelText: "Cerrar",
+        onCancel: hideCustomAlert,
+        onConfirm: async () => {
+            hideCustomAlert()
+            const cameraPermission = await ImagePicker.requestCameraPermissionsAsync()
+            if (cameraPermission.status !== "granted") {
+                setTimeout(() => showCustomAlert("Permiso denegado", "Necesitamos permiso para usar la cámara."), 500)
+                return
+            }
+            const result = await ImagePicker.launchCameraAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                quality: 0.5,
+            })
+            if (!result.canceled) {
+                setPhotos((prevPhotos) => [...prevPhotos, ...result.assets])
+            }
+        }
+    })
   }
 
   // Función para eliminar una foto de la vista previa
@@ -159,6 +264,11 @@ const NewWorkScreen = () => {
     }, 0)
   }
 
+  // formatCurrency: quita los decimales y agrega separador de miles con punto
+  const formatCurrency = (amount) => {
+    return Math.round(Number(amount) || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  }
+
   // Calcular el total general
   const calculateTotal = () => {
     const materialsTotal = calculateMaterialsTotal()
@@ -170,14 +280,14 @@ const NewWorkScreen = () => {
   const handleSaveWork = async () => {
     // Validar que los campos obligatorios estén llenos
     if (!selectedClient || !trabajo || !domicilioTrabajo || !tipoTrabajo) {
-      Alert.alert("Error", "El cliente, domicilio, tipo y descripción del trabajo son obligatorios.")
+      showCustomAlert("Error", "El cliente, domicilio, tipo y descripción del trabajo son obligatorios.")
       return
     }
 
     // Validar que al menos un material tenga datos
     const validMaterials = materiales.filter((m) => m.descripcion.trim() !== "")
     if (validMaterials.length === 0) {
-      Alert.alert("Error", "Debe agregar al menos un material.")
+      showCustomAlert("Error", "Debe agregar al menos un material.")
       return
     }
 
@@ -197,7 +307,7 @@ const NewWorkScreen = () => {
 
       if (conflictingWork) {
         const conflictDate = new Date(conflictingWork.fecha)
-        Alert.alert(
+        showCustomAlert(
           "Horario Ocupado",
           `Ya existe un trabajo programado para el ${conflictDate.toLocaleDateString()} a las ${conflictDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.\n\nCliente: ${conflictingWork.clienteNombre}\nTrabajo: ${conflictingWork.trabajo}\n\nPor favor selecciona otro horario.`,
         )
@@ -244,90 +354,68 @@ const NewWorkScreen = () => {
       const updatedWorks = [...existingWorks, newWork]
       await AsyncStorage.setItem("trabajos", JSON.stringify(updatedWorks))
 
-      Alert.alert(
+      showCustomAlert(
         "Trabajo Guardado",
         "El trabajo se guardó correctamente. ¿Deseas enviar un comprobante al cliente por WhatsApp?",
-        [
-          {
-            text: "No",
-            style: "cancel",
-            onPress: () => {
-              // Limpiar formulario y navegar
-              setSelectedClient(null)
-              setTrabajo("")
-              setDomicilioTrabajo("")
-              setMateriales([{ descripcion: "", cantidad: "", precio: "" }])
-              setCostoManoDeObra("")
-              setFecha(new Date())
-              setSearchText("")
-              setTipoTrabajo(null)
-              setPhotos([])
-              router.replace("/")
-            },
+        {
+          cancelText: "No",
+          confirmText: "Sí, Enviar",
+          onCancel: () => {
+            hideCustomAlert()
+            // Limpiar formulario y navegar
+            setSelectedClient(null)
+            setTrabajo("")
+            setDomicilioTrabajo("")
+            setMateriales([{ descripcion: "", cantidad: "", precio: "" }])
+            setCostoManoDeObra("")
+            setFecha(new Date())
+            setSearchText("")
+            setTipoTrabajo(null)
+            setPhotos([])
+            router.replace("/")
           },
-          {
-            text: "Sí, Enviar",
-            onPress: () => {
-              // Crear mensaje de WhatsApp
-              const fechaFormateada = new Date(newWork.fecha).toLocaleDateString("es-ES", {
-                weekday: "long",
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-              })
-              const horaFormateada = new Date(newWork.fecha).toLocaleTimeString("es-ES", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
+          onConfirm: () => {
+            hideCustomAlert()
+            // Crear mensaje de WhatsApp
+            const fechaFormateada = new Date(newWork.fecha).toLocaleDateString("es-ES", {
+              weekday: "long",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            })
+            const horaFormateada = new Date(newWork.fecha).toLocaleTimeString("es-ES", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
 
-              const materialesTexto = newWork.materiales
-                .map(
-                  (m) =>
-                    `• ${m.descripcion} - Cant: ${m.cantidad} - $${(Number.parseFloat(m.cantidad) * Number.parseFloat(m.precio)).toFixed(2)}`,
-                )
-                .join("\n")
+            const materialesTexto = newWork.materiales
+              .map(
+                (m) =>
+                  `• ${m.descripcion} - Cant: ${m.cantidad} - $${formatCurrency(Number.parseFloat(m.cantidad) * Number.parseFloat(m.precio))}`,
+              )
+              .join("\n")
 
-              const mensaje = `🔧 *COMPROBANTE DE TRABAJO PROGRAMADO*
+            const mensaje = `🔧 *COMPROBANTE DE TRABAJO PROGRAMADO*\n\n👤 *Cliente:* ${newWork.clienteNombre}\n📍 *Domicilio:* ${newWork.domicilio}\n🗓️ *Fecha:* ${fechaFormateada}\n⏰ *Hora:* ${horaFormateada}\n⚡ *Tipo:* ${newWork.tipoTrabajo}\n\n📝 *Descripción del trabajo:*\n${newWork.trabajo}\n\n🛠️ *Materiales:*\n${materialesTexto}\n\n💰 *Costos:*\n• Materiales: $${formatCurrency(newWork.costoMateriales)}\n• Mano de obra: $${formatCurrency(newWork.costoManoDeObra)}\n• *TOTAL: $${formatCurrency(newWork.total)}*\n\n✅ Estado: ${newWork.estadoPago}\n\n¡Nos vemos el día programado!`
 
-👤 *Cliente:* ${newWork.clienteNombre}
-📍 *Domicilio:* ${newWork.domicilio}
-🗓️ *Fecha:* ${fechaFormateada}
-⏰ *Hora:* ${horaFormateada}
-⚡ *Tipo:* ${newWork.tipoTrabajo}
+            const phoneNumber = selectedClient.telefono.replace(/\D/g, "")
+            const whatsappUrl = `whatsapp://send?phone=${phoneNumber}&text=${encodeURIComponent(mensaje)}`
 
-📝 *Descripción del trabajo:*
-${newWork.trabajo}
-
-🛠️ *Materiales:*
-${materialesTexto}
-
-💰 *Costos:*
-• Materiales: $${newWork.costoMateriales.toFixed(2)}
-• Mano de obra: $${newWork.costoManoDeObra.toFixed(2)}
-• *TOTAL: $${newWork.total.toFixed(2)}*
-
-✅ Estado: ${newWork.estadoPago}
-
-¡Nos vemos el día programado!`
-
-              const phoneNumber = selectedClient.telefono.replace(/\D/g, "")
-              const whatsappUrl = `whatsapp://send?phone=${phoneNumber}&text=${encodeURIComponent(mensaje)}`
-
-              // Intenta abrir WhatsApp directamente con el objeto Linking
-              Linking.canOpenURL(whatsappUrl).then((supported) => {
-                if (supported) {
-                  Linking.openURL(whatsappUrl)
-                } else {
-                  Alert.alert("Error", "No se pudo abrir WhatsApp. Asegúrate de tenerlo instalado.")
-                }
-              })
-            },
-          },
-        ],
+            // Intenta abrir WhatsApp directamente con el objeto Linking
+            Linking.canOpenURL(whatsappUrl).then((supported) => {
+              if (supported) {
+                Linking.openURL(whatsappUrl)
+              } else {
+                setTimeout(() => showCustomAlert("Error", "No se pudo abrir WhatsApp. Asegúrate de tenerlo instalado."), 500)
+              }
+            })
+            router.replace("/")
+          }
+        }
       )
     } catch (error) {
       console.error("Error al guardar el trabajo:", error)
-      Alert.alert("Error", "No se pudo guardar el trabajo.")
+      hideCustomAlert()
+      setTimeout(() => showCustomAlert("Error", "No se pudo guardar el trabajo."), 500)
     }
   }
 
@@ -391,7 +479,7 @@ ${materialesTexto}
 
       {item.cantidad && item.precio && (
         <Text style={styles.subtotalText}>
-          Subtotal: ${(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio)).toFixed(2)}
+          Subtotal: ${formatCurrency(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio))}
         </Text>
       )}
     </View>
@@ -525,15 +613,15 @@ ${materialesTexto}
           <View style={styles.totalContainer}>
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Materiales:</Text>
-              <Text style={styles.totalValue}>${calculateMaterialsTotal().toFixed(2)}</Text>
+              <Text style={styles.totalValue}>${formatCurrency(calculateMaterialsTotal())}</Text>
             </View>
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Mano de Obra:</Text>
-              <Text style={styles.totalValue}>${(Number.parseFloat(costoManoDeObra) || 0).toFixed(2)}</Text>
+              <Text style={styles.totalValue}>${formatCurrency(costoManoDeObra)}</Text>
             </View>
             <View style={[styles.totalRow, styles.finalTotal]}>
               <Text style={styles.finalTotalLabel}>TOTAL:</Text>
-              <Text style={styles.finalTotalValue}>${calculateTotal().toFixed(2)}</Text>
+              <Text style={styles.finalTotalValue}>${formatCurrency(calculateTotal())}</Text>
             </View>
           </View>
 
@@ -589,7 +677,7 @@ ${materialesTexto}
                 style={styles.searchInput}
                 value={searchText}
                 onChangeText={setSearchText}
-                placeholder="Buscar por nombre o apellido"
+                placeholder="Buscar por nombre"
                 placeholderTextColor="#999"
               />
             </View>
@@ -617,18 +705,84 @@ ${materialesTexto}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Seleccionar Tipo de Trabajo</Text>
-            {workTypes.map((type) => (
-              <TouchableOpacity key={type} style={styles.modalItem} onPress={() => handleWorkTypeSelect(type)}>
-                <Text style={styles.modalItemText}>{type || ""}</Text>
+            <Text style={styles.modalTitle}>Tipo de Trabajo</Text>
+
+            <View style={styles.addTypeContainer}>
+              <TextInput
+                style={styles.addTypeInput}
+                value={newWorkType}
+                onChangeText={setNewWorkType}
+                placeholder={editingWorkTypeIndex !== null ? "Editar tipo de trabajo..." : "Nuevo tipo de trabajo..."}
+                placeholderTextColor="#999"
+              />
+              <TouchableOpacity style={styles.addTypeButton} onPress={handleAddWorkType}>
+                <Ionicons name={editingWorkTypeIndex !== null ? "checkmark" : "add"} size={24} color="#FFF" />
               </TouchableOpacity>
-            ))}
+            </View>
+
+            <Text style={styles.subModalTitle}>Seleccionar Existente</Text>
+            <FlatList
+              data={workTypes}
+              keyExtractor={(item, index) => index.toString()}
+              renderItem={({ item, index }) => (
+                <View style={styles.workTypeRow}>
+                  <TouchableOpacity style={styles.modalItemTouchable} onPress={() => handleWorkTypeSelect(item)}>
+                    <Text style={styles.modalItemText}>{item || ""}</Text>
+                  </TouchableOpacity>
+                  <View style={styles.workTypeActions}>
+                    <TouchableOpacity onPress={() => startEditingWorkType(index)} style={styles.actionButton}>
+                      <Ionicons name="pencil" size={20} color="#2196F3" />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleDeleteWorkType(index)} style={styles.actionButton}>
+                      <Ionicons name="trash" size={20} color="#F44336" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              style={styles.workTypesList}
+              ListEmptyComponent={() => <Text style={styles.emptyListText}>No hay tipos de trabajo guardados.</Text>}
+            />
 
             <TouchableOpacity onPress={() => setWorkTypeModalVisible(false)} style={styles.closeModalButton}>
               <Text style={styles.closeModalButtonText}>Cerrar</Text>
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* Custom Alert Modal */}
+      <Modal
+          transparent={true}
+          visible={alertConfig.visible}
+          animationType="fade"
+          onRequestClose={hideCustomAlert}
+      >
+          <View style={styles.alertOverlay}>
+              <View style={styles.alertBox}>
+                  <Text style={styles.alertTitle}>{alertConfig.title}</Text>
+                  <Text style={styles.alertMessage}>{alertConfig.message}</Text>
+                  <View style={styles.alertButtons}>
+                      {alertConfig.onCancel && (
+                          <TouchableOpacity 
+                              style={[styles.alertButton, styles.alertCancelButton]} 
+                              onPress={alertConfig.onCancel}
+                          >
+                              <Text style={styles.alertCancelText}>{alertConfig.cancelText}</Text>
+                          </TouchableOpacity>
+                      )}
+                      <TouchableOpacity 
+                          style={[
+                              styles.alertButton, 
+                              styles.alertConfirmButton, 
+                              alertConfig.destructive && styles.alertDestructiveButton
+                          ]} 
+                          onPress={alertConfig.onConfirm}
+                      >
+                          <Text style={styles.alertConfirmText}>{alertConfig.confirmText}</Text>
+                      </TouchableOpacity>
+                  </View>
+              </View>
+          </View>
       </Modal>
     </SafeAreaView>
   )
@@ -806,6 +960,28 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#E1E5EA",
   },
+  workTypeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E1E5EA",
+    paddingVertical: 10,
+  },
+  modalItemTouchable: {
+    flex: 1,
+    paddingVertical: 5,
+  },
+  workTypeActions: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  actionButton: {
+    padding: 8,
+    marginLeft: 10,
+    backgroundColor: "#F5F7FA",
+    borderRadius: 8,
+  },
   modalItemText: {
     fontSize: 16,
     color: "#2F4550",
@@ -967,6 +1143,106 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 2,
     elevation: 3,
+  },
+  subModalTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#2F4550",
+    marginTop: 15,
+    marginBottom: 5,
+  },
+  addTypeContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  addTypeInput: {
+    flex: 1,
+    backgroundColor: "#F5F7FA",
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 16,
+    color: "#2F4550",
+    borderWidth: 1,
+    borderColor: "#E1E5EA",
+    marginRight: 10,
+  },
+  addTypeButton: {
+    backgroundColor: "#2196F3",
+    padding: 12,
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  workTypesList: {
+    maxHeight: 200,
+  },
+  // Custom Alert Styles
+  alertOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0, 0, 0, 0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 20,
+  },
+  alertBox: {
+      backgroundColor: "#FFF",
+      borderRadius: 15,
+      padding: 20,
+      width: "90%",
+      maxWidth: 400,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 10,
+      elevation: 5,
+  },
+  alertTitle: {
+      fontSize: 18,
+      fontWeight: "bold",
+      color: "#2F4550",
+      marginBottom: 10,
+      textAlign: "center",
+  },
+  alertMessage: {
+      fontSize: 15,
+      color: "#555",
+      marginBottom: 20,
+      textAlign: "center",
+      lineHeight: 22,
+  },
+  alertButtons: {
+      flexDirection: "row",
+      justifyContent: "space-around",
+      gap: 10,
+  },
+  alertButton: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+  },
+  alertCancelButton: {
+      backgroundColor: "#F5F7FA",
+      borderWidth: 1,
+      borderColor: "#E1E5EA",
+  },
+  alertConfirmButton: {
+      backgroundColor: "#2196F3",
+  },
+  alertDestructiveButton: {
+      backgroundColor: "#F44336",
+  },
+  alertCancelText: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: "#555",
+  },
+  alertConfirmText: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: "#FFF",
   },
 })
 

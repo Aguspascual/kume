@@ -14,6 +14,7 @@ export default function Layout() {
       <Stack.Screen name="NewBudgetScreen" options={{ headerShown: false }} />
       <Stack.Screen name="BudgetsScreen" options={{ headerShown: false }} />
       <Stack.Screen name="BudgetDetailScreen" options={{ headerShown: false }} />
+      <Stack.Screen name="PendingPaymentsScreen" options={{ headerShown: false }} />
     </Stack>
   );
 }

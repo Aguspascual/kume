@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react"
-import { StyleSheet, View, Text, TouchableOpacity, Platform, Alert, ScrollView } from "react-native"
-import { SafeAreaView } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons"
-import { useRouter } from "expo-router"
-import * as Notifications from "expo-notifications"
 import AsyncStorage from "@react-native-async-storage/async-storage"
-import * as Sharing from "expo-sharing"
 import * as DocumentPicker from "expo-document-picker"
 import * as FileSystem from "expo-file-system"
+import * as Notifications from "expo-notifications"
+import { useRouter } from "expo-router"
+import * as Sharing from "expo-sharing"
+import { useEffect, useState } from "react"
+import { Alert, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native"
+import { SafeAreaView } from "react-native-safe-area-context"
 
 // Configuración del manejador de notificaciones para que las notificaciones se muestran en primer plano
 Notifications.setNotificationHandler({
@@ -105,10 +105,10 @@ const scheduleWorkNotifications = async () => {
 
     // Programar notificación para cada trabajo futuro
     for (const work of works) {
-      if (work.estado === "Cancelado") continue 
+      if (work.estado === "Cancelado") continue
 
       const workDateTime = new Date(`${work.fecha}T${work.hora}`)
-      const notificationTime = new Date(workDateTime.getTime() - 60 * 60 * 1000) 
+      const notificationTime = new Date(workDateTime.getTime() - 60 * 60 * 1000)
 
       // Solo programar si la notificación es en el futuro
       if (notificationTime > now) {
@@ -133,7 +133,20 @@ const scheduleWorkNotifications = async () => {
 const index = () => {
   const router = useRouter()
   const [showOptionsMenu, setShowOptionsMenu] = useState(false)
+  const [isTrialExpired, setIsTrialExpired] = useState(false)
+
   useEffect(() => {
+    const checkExpiration = () => {
+      // Validar si la fecha actual es posterior al 12/05/2026 (YYYY-MM-DD)
+      const expirationDate = new Date("2026-05-12T00:00:00")
+      const currentDate = new Date()
+      if (currentDate > expirationDate) {
+        setIsTrialExpired(true)
+      }
+    }
+
+    checkExpiration()
+
     const initializeNotifications = async () => {
       await registerForPushNotificationsAsync()
       await scheduleDailyReminder()
@@ -173,7 +186,7 @@ const index = () => {
       const dataToExport = Object.fromEntries(items)
       const dataString = JSON.stringify(dataToExport)
 
-      const fileUri = `${FileSystem.documentDirectory}buscapolo_backup.json`
+      const fileUri = `${FileSystem.documentDirectory}kume_backup.json`
       await FileSystem.writeAsStringAsync(fileUri, dataString)
 
       if (!(await Sharing.isAvailableAsync())) {
@@ -181,7 +194,7 @@ const index = () => {
         return
       }
 
-      await Sharing.shareAsync(fileUri, { dialogTitle: "Exportar Backup Buscapolo" })
+      await Sharing.shareAsync(fileUri, { dialogTitle: "Exportar Backup Küme" })
       Alert.alert("Éxito", "Backup exportado correctamente.")
     } catch (error) {
       console.error("Error al exportar los datos:", error)
@@ -218,7 +231,7 @@ const index = () => {
   }
 
   const handleImportDataOld = async () => {
-    setShowOptionsMenu(false) 
+    setShowOptionsMenu(false)
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: "application/json",
@@ -243,11 +256,23 @@ const index = () => {
 
   return (
     <View style={styles.container}>
+      <Modal visible={isTrialExpired} transparent={true} animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Ionicons name="warning" size={60} color="#FF9800" />
+            <Text style={styles.modalTitle}>Versión de prueba finalizada</Text>
+            <Text style={styles.modalText}>
+              El período de prueba ha terminado. Por favor contacte al administrador para continuar usando la aplicación.
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.header}>
-          <Text style={styles.title}>BUSCAPOLO</Text>
-          <TouchableOpacity 
-            style={styles.optionsButton} 
+          <Text style={styles.title}>KÜME</Text>
+          <TouchableOpacity
+            style={styles.optionsButton}
             onPress={() => setShowOptionsMenu(!showOptionsMenu)}
           >
             <Ionicons name="cog" size={28} color="#FFF" />
@@ -305,19 +330,26 @@ const index = () => {
                 </View>
                 <Text style={styles.buttonText}>Nuevo Cliente</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={styles.button} onPress={() => router.push("UsersScreen")}>
                 <View style={styles.buttonIconContainer}>
                   <Ionicons name="people" size={32} color="#FFF" />
                 </View>
                 <Text style={styles.buttonText}>Usuarios</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={styles.button} onPress={() => router.push("MonthlySummaryScreen")}>
                 <View style={styles.buttonIconContainer}>
                   <Ionicons name="bar-chart" size={32} color="#FFF" />
                 </View>
                 <Text style={styles.buttonText}>Dashboard</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.button} onPress={() => router.push("PendingPaymentsScreen")}>
+                <View style={styles.buttonIconContainer}>
+                  <Ionicons name="cash-outline" size={32} color="#FFF" />
+                </View>
+                <Text style={styles.buttonText}>Pagos pendientes</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -432,6 +464,38 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     textAlign: "center",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    width: "85%",
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 30,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: "bold",
+    color: "#2F4550",
+    marginTop: 15,
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  modalText: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    lineHeight: 24,
   },
 })
 

@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Buscapolo",
-    "slug": "Buscapolo",
+    "name": "Küme",
+    "slug": "kume",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "buscapolo",
+    "icon": "./assets/images/Gemini_Generated_Image_yubcdjyubcdjyubc.png",
+    "scheme": "kume",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -17,7 +17,7 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.aguspascual.Buscapolo"
+      "package": "com.aguspascual.kume"
     },
     "web": {
       "bundler": "metro",
@@ -33,6 +33,19 @@
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permite a Küme acceder a tu galería para adjuntar fotos a los trabajos.",
+          "cameraPermission": "Permite a Küme usar tu cámara para tomar fotos de tus trabajos."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Permite a Küme acceder a tus contactos para importar clientes fácilmente."
         }
       ]
     ],
