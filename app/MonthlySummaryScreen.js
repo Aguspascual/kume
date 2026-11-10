@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { ScrollView, StyleSheet, SafeAreaView, View, Text, TouchableOpacity, ActivityIndicator, Alert,} from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
+import AsyncStorage from "../lib/backendStorage"
 import { useRouter } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { format, getMonth, getYear, setMonth, setYear } from "date-fns"
@@ -14,11 +14,7 @@ const MonthlySummaryScreen = () => {
   const [showYearPicker, setShowYearPicker] = useState(false)
   const router = useRouter()
 
-  useEffect(() => {
-    fetchTrabajos()
-  }, [selectedDate])
-
-  const fetchTrabajos = async () => {
+  const fetchTrabajos = useCallback(async () => {
     setLoading(true)
     try {
       const trabajosJSON = await AsyncStorage.getItem("trabajos")
@@ -37,7 +33,13 @@ const MonthlySummaryScreen = () => {
     } finally {
       setLoading(false)
     }
-  }
+  }, [selectedDate])
+
+  useEffect(() => {
+    // fetchTrabajos updates fetched data and loading state after AsyncStorage resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchTrabajos()
+  }, [fetchTrabajos])
 
   // Calcula el resumen de costos
   const totalMateriales = trabajos.reduce((sum, trabajo) => sum + (Number.parseFloat(trabajo.costoMateriales) || 0), 0)

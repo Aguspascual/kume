@@ -1,0 +1,76 @@
+name: kume
+
+services:
+  db:
+    container_name: KUME_BD
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kume
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copy .env.docker.example to .env.docker and set POSTGRES_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env.docker}
+    volumes:
+      - KUME_BD_data:/var/lib/postgresql
+      - ./backend/db-init/10-create-app-role.sh:/docker-entrypoint-initdb.d/10-create-app-role.sh:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kume"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    mem_limit: 512m
+
+  api:
+    container_name: KUME_back
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: kume
+      DB_USER: kume_app
+      DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env.docker}
+      DB_SSLMODE: disable
+      SESSION_TTL: 720h
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8099,http://127.0.0.1:8099}
+      NODUS_KUME_TOKEN: ${NODUS_KUME_TOKEN:-}
+      KUME_APP_VERSION: ${KUME_APP_VERSION:-}
+      KUME_DEPLOYMENT_VERSION: ${KUME_DEPLOYMENT_VERSION:-}
+      KUME_NODE_ID: ${KUME_NODE_ID:-}
+      KUME_NODE_NAME: ${KUME_NODE_NAME:-}
+      KUME_NODE_ROLE: ${KUME_NODE_ROLE:-}
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-18080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/api", "healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    mem_limit: 256m
+
+networks:
+  backend:
+    name: KUME_network
+    driver: bridge
+
+volumes:
+  KUME_BD_data:
+    name: KUME_BD_data

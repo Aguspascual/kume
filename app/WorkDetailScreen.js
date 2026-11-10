@@ -4,30 +4,46 @@ import { useEffect, useState } from "react"
 import {
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   View,
   Text,
   TouchableOpacity,
-  Alert,
   FlatList,
   Modal,
   Dimensions,
+  Platform,
   TextInput,
   Linking,
 } from "react-native"
+import { SafeAreaView } from "react-native-safe-area-context"
 import { Image } from "expo-image"
 import { useRouter, useLocalSearchParams } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
-import AsyncStorage from "@react-native-async-storage/async-storage"
-import * as FileSystem from "expo-file-system"
+import AsyncStorage from "../lib/backendStorage"
+import * as FileSystem from "expo-file-system/legacy"
+import * as ImagePicker from "expo-image-picker"
 import DateTimePicker from "@react-native-community/datetimepicker"
+import { getOfficialUsdQuote } from "../lib/officialExchangeRate"
+import { createAndSharePdf } from "../lib/sharePdf"
+import { useAuth } from "../lib/auth"
+
+const parseCurrencyAmount = (amount) => {
+  if (typeof amount === "number") return amount
+  return Number(String(amount ?? "").replace(/\D/g, "")) || 0
+}
 
 const WorkDetailScreen = () => {
   const router = useRouter()
+  const { session } = useAuth()
   const { trabajo: trabajoJSON } = useLocalSearchParams()
-  const [trabajo, setTrabajo] = useState(JSON.parse(trabajoJSON))
+  const [trabajo, setTrabajo] = useState(() => {
+    const initialWork = JSON.parse(trabajoJSON)
+    return {
+      ...initialWork,
+      materiales: Array.isArray(initialWork.materiales) ? initialWork.materiales.filter((item) => item && typeof item === "object") : [],
+    }
+  })
   const [photoUris, setPhotoUris] = useState([])
   const [modalVisible, setModalVisible] = useState(false)
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0)
@@ -37,6 +53,8 @@ const WorkDetailScreen = () => {
   const [reprogramModalVisible, setReprogramModalVisible] = useState(false)
   const [showAddMaterialModal, setShowAddMaterialModal] = useState(false)
   const [showEditPriceModal, setShowEditPriceModal] = useState(false)
+  const [showPhotoSourceModal, setShowPhotoSourceModal] = useState(false)
+  const [isExportingPdf, setIsExportingPdf] = useState(false)
   const [isEditingAddress, setIsEditingAddress] = useState(false) // NUEVO: Estado para controlar la edición del domicilio
   const [editedAddress, setEditedAddress] = useState(trabajo.domicilio) // NUEVO: Estado para el domicilio editable
   const [newMaterial, setNewMaterial] = useState({
@@ -44,7 +62,7 @@ const WorkDetailScreen = () => {
     cantidad: "",
     precio: "",
   })
-  const [newWorkPrice, setNewWorkPrice] = useState((Number.parseFloat(trabajo.costoManoDeObra) || 0).toString())
+  const [newWorkPrice, setNewWorkPrice] = useState(parseCurrencyAmount(trabajo.costoManoDeObra).toString())
 
   const [alertConfig, setAlertConfig] = useState({
     visible: false,
@@ -74,26 +92,14 @@ const WorkDetailScreen = () => {
     setAlertConfig((prev) => ({ ...prev, visible: false }))
   }
 
-  const formatCurrency = (amount) => {
-    return Math.round(Number(amount) || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")
+  const formatCurrency = (amount) => Math.round(parseCurrencyAmount(amount)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")
+  const openEditPriceModal = () => {
+    setNewWorkPrice(formatCurrency(trabajo.costoManoDeObra))
+    setShowEditPriceModal(true)
   }
 
   // Calcula el costo total basado en los materiales y la mano de obra del objeto de trabajo
-  const costoTotal =
-    (Number.parseFloat(trabajo.costoMateriales) || 0) + (Number.parseFloat(trabajo.costoManoDeObra) || 0)
-
-  useEffect(() => {
-    console.log("Fotos del trabajo:", trabajo.photos)
-    checkPhotos()
-    // Asegurarse de que el objeto trabajo tenga una propiedad 'materiales'
-    if (!trabajo.materiales) {
-      setTrabajo((prevTrabajo) => ({ ...prevTrabajo, materiales: [] }))
-    }
-    // NUEVO: Auto-completar domicilio si está vacío
-    if (!trabajo.domicilio || trabajo.domicilio.trim() === "") {
-      fetchClientAddress()
-    }
-  }, [])
+  const costoTotal = parseCurrencyAmount(trabajo.costoMateriales) + parseCurrencyAmount(trabajo.costoManoDeObra)
 
   // NUEVO: Función para buscar y auto-completar el domicilio
   const fetchClientAddress = async () => {
@@ -101,7 +107,9 @@ const WorkDetailScreen = () => {
       const clientesJSON = await AsyncStorage.getItem("clientes")
       if (clientesJSON) {
         const clientes = JSON.parse(clientesJSON)
-        const clienteEncontrado = clientes.find((c) => c.nombre === trabajo.clienteNombre)
+        const clienteEncontrado = clientes.find((client) => client.id === trabajo.clienteId) ||
+          clientes.find((client) => `${client.nombre} ${client.apellido}`.trim() === trabajo.clienteNombre) ||
+          clientes.find((client) => client.nombre === trabajo.clienteNombre)
         if (clienteEncontrado && clienteEncontrado.domicilio) {
           const trabajoActualizado = { ...trabajo, domicilio: clienteEncontrado.domicilio }
           setTrabajo(trabajoActualizado)
@@ -137,17 +145,27 @@ const WorkDetailScreen = () => {
     }
   }
 
+  useEffect(() => {
+    console.log("Fotos del trabajo:", trabajo.photos)
+    // checkPhotos updates photo state after the file system checks resolve.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    checkPhotos()
+    if (!trabajo.domicilio?.trim()) {
+      fetchClientAddress()
+    }
+  }, [])
+
   const getEstadoPagoColor = (estado) => {
     switch (estado) {
       case "Pagado":
-        return "#4CAF50"
+        return "#087F75"
       case "Terminado, falta pago":
       case "Pendiente":
-        return "#FF9800"
+        return "#A85D0A"
       case "Cancelado":
-        return "#F44336"
+        return "#748078"
       default:
-        return "#666"
+        return "#596578"
     }
   }
 
@@ -169,15 +187,44 @@ const WorkDetailScreen = () => {
     try {
       const trabajosJSON = await AsyncStorage.getItem("trabajos")
       const trabajos = trabajosJSON ? JSON.parse(trabajosJSON) : []
+      let trabajoActualizado
+      let datosPago
+      if (nuevoEstado === "Pagado") {
+        const fechaPago = new Date()
+        const cotizacion = await getOfficialUsdQuote(fechaPago)
+        const montoPagoARS = parseCurrencyAmount(trabajo.costoMateriales) + parseCurrencyAmount(trabajo.costoManoDeObra)
+        datosPago = {
+          fechaPago: fechaPago.toISOString(),
+          montoPagoARS,
+          cotizacionUSD: cotizacion.rate,
+          montoPagoUSD: Number((montoPagoARS / cotizacion.rate).toFixed(2)),
+          fechaCotizacionUSD: cotizacion.quoteDate,
+          fuenteCotizacionUSD: cotizacion.source,
+          cotizacionUSDEnCache: Boolean(cotizacion.cached),
+        }
+      }
 
-      const trabajosActualizados = trabajos.map((t) => (t.id === trabajo.id ? { ...t, estadoPago: nuevoEstado } : t))
+      const trabajosActualizados = trabajos.map((t) => {
+        if (t.id !== trabajo.id) return t
+        trabajoActualizado = { ...t, estadoPago: nuevoEstado, ...(datosPago || {}) }
+        return trabajoActualizado
+      })
+      if (!trabajoActualizado) throw new Error("No se encontró el trabajo para actualizar.")
 
       await AsyncStorage.setItem("trabajos", JSON.stringify(trabajosActualizados))
-      setTrabajo({ ...trabajo, estadoPago: nuevoEstado })
-      showCustomAlert("Éxito", `Estado de pago cambiado a "${nuevoEstado}"`)
+      setTrabajo(trabajoActualizado)
+      if (nuevoEstado === "Pagado") {
+        showCustomAlert(`Pago registrado de $${formatCurrency(datosPago.montoPagoARS)}`, "")
+      } else {
+        showCustomAlert("Éxito", `Estado de pago cambiado a "${nuevoEstado}"`)
+      }
     } catch (error) {
       console.error("Error al cambiar estado de pago:", error)
-      showCustomAlert("Error", "No se pudo cambiar el estado de pago")
+      if (nuevoEstado === "Pagado") {
+        showCustomAlert("No se pudo registrar el pago", "No pudimos consultar una cotización oficial del dólar en el BCRA. El trabajo sigue pendiente; conectate a internet e intentá de nuevo.")
+      } else {
+        showCustomAlert("Error", "No se pudo cambiar el estado de pago.")
+      }
     }
   }
 
@@ -236,12 +283,23 @@ const WorkDetailScreen = () => {
 
   const handleReprogramar = () => {
     setReprogramModalVisible(false)
+    setNewDate(new Date(trabajo.fecha))
     setShowDatePicker(true)
   }
 
-  const handleEliminarTrabajo = async () => {
+  const handleEliminarTrabajo = () => {
     setReprogramModalVisible(false)
+    showCustomAlert("Eliminar trabajo", "¿Querés eliminar este trabajo? Esta acción no se puede deshacer.", {
+      cancelText: "Volver",
+      confirmText: "Eliminar",
+      destructive: true,
+      onCancel: hideCustomAlert,
+      onConfirm: eliminarTrabajoConfirmado,
+    })
+  }
 
+  const eliminarTrabajoConfirmado = async () => {
+    hideCustomAlert()
     try {
       const trabajosJSON = await AsyncStorage.getItem("trabajos")
       const trabajos = trabajosJSON ? JSON.parse(trabajosJSON) : []
@@ -261,7 +319,51 @@ const WorkDetailScreen = () => {
     }
   }
 
-  const onDateChange = (event, selectedDate) => {
+  const handleExportPdf = async () => {
+    setIsExportingPdf(true)
+    try {
+      const materials = Array.isArray(trabajo.materiales) ? trabajo.materiales : []
+      await createAndSharePdf({
+        documentType: "ORDEN DE TRABAJO",
+        title: "Detalle del trabajo",
+        subtitle: "Comprobante de servicio realizado",
+        status: trabajo.estadoPago || "Pendiente",
+        client: {
+          name: trabajo.clienteNombre,
+          phone: trabajo.telefono,
+          address: trabajo.domicilio,
+        },
+        responsable: {
+          name: session?.user?.display_name,
+          phone: session?.user?.contact_phone,
+        },
+        serviceDetails: [
+          ["Tipo de trabajo", trabajo.tipoTrabajo],
+          ["Fecha y hora", trabajo.fecha ? format(new Date(trabajo.fecha), "dd/MM/yyyy · HH:mm", { locale: es }) : ""],
+          ["Descripción", trabajo.trabajo],
+        ],
+        materials: materials.map((item) => ({
+          descripcion: item.descripcion || "Material",
+          cantidad: item.cantidad ?? "—",
+          precioUnitario: `$ ${formatCurrency(item.precio)}`,
+          subtotal: `$ ${formatCurrency(Number(item.cantidad) * parseCurrencyAmount(item.precio))}`,
+        })),
+        costs: {
+          materials: `$ ${formatCurrency(trabajo.costoMateriales)}`,
+          labor: `$ ${formatCurrency(trabajo.costoManoDeObra)}`,
+          total: `$ ${formatCurrency(parseCurrencyAmount(trabajo.costoMateriales) + parseCurrencyAmount(trabajo.costoManoDeObra))} ARS`,
+        },
+        photos: photoUris.length ? photoUris : (trabajo.photos || []),
+      })
+    } catch (error) {
+      console.error("Error al generar el PDF del trabajo:", error)
+      showCustomAlert("No se pudo generar el PDF", "Intentá de nuevo en unos segundos.")
+    } finally {
+      setIsExportingPdf(false)
+    }
+  }
+
+  const onDateValueChange = (event, selectedDate) => {
     setShowDatePicker(false)
     if (selectedDate) {
       setNewDate(selectedDate)
@@ -269,7 +371,7 @@ const WorkDetailScreen = () => {
     }
   }
 
-  const onTimeChange = async (event, selectedTime) => {
+  const onTimeValueChange = async (event, selectedTime) => {
     setShowTimePicker(false)
     if (selectedTime) {
       const updatedDate = new Date(newDate)
@@ -329,7 +431,7 @@ const WorkDetailScreen = () => {
 
     // Recalcular el costo de materiales
     const nuevoCostoMateriales = nuevosMateriales.reduce(
-      (sum, item) => sum + Number(item.cantidad) * Number(item.precio),
+      (sum, item) => sum + Number(item.cantidad) * parseCurrencyAmount(item.precio),
       0,
     )
 
@@ -337,7 +439,7 @@ const WorkDetailScreen = () => {
       ...trabajo,
       materiales: nuevosMateriales,
       costoMateriales: nuevoCostoMateriales,
-      costoTotal: nuevoCostoMateriales + (Number.parseFloat(trabajo.costoManoDeObra) || 0),
+      costoTotal: nuevoCostoMateriales + parseCurrencyAmount(trabajo.costoManoDeObra),
     }
 
     // Actualizar el estado local
@@ -373,7 +475,7 @@ const WorkDetailScreen = () => {
           const nuevosMateriales = trabajo.materiales.filter((_, index) => index !== indexToDelete)
 
           const nuevoCostoMateriales = nuevosMateriales.reduce(
-            (sum, item) => sum + Number(item.cantidad) * Number(item.precio),
+            (sum, item) => sum + Number(item.cantidad) * parseCurrencyAmount(item.precio),
             0,
           )
 
@@ -381,7 +483,7 @@ const WorkDetailScreen = () => {
             ...trabajo,
             materiales: nuevosMateriales,
             costoMateriales: nuevoCostoMateriales,
-            costoTotal: nuevoCostoMateriales + (Number.parseFloat(trabajo.costoManoDeObra) || 0),
+            costoTotal: nuevoCostoMateriales + parseCurrencyAmount(trabajo.costoManoDeObra),
           }
 
           setTrabajo(trabajoActualizado)
@@ -418,6 +520,61 @@ const WorkDetailScreen = () => {
     }
   }
 
+  const handleToggleAddressEdit = async () => {
+    if (isEditingAddress) {
+      await handleSaveAddress()
+      return
+    }
+    setEditedAddress(trabajo.domicilio || "")
+    setIsEditingAddress(true)
+  }
+
+  const savePhotoToWork = async (sourceUri) => {
+    try {
+      const fileName = `${trabajo.id || "trabajo"}_${Date.now()}_${sourceUri.split("/").pop()}`
+      const photosDirectory = `${FileSystem.documentDirectory}photos/`
+      const savedUri = `${photosDirectory}${fileName}`
+      await FileSystem.makeDirectoryAsync(photosDirectory, { intermediates: true })
+      await FileSystem.copyAsync({ from: sourceUri, to: savedUri })
+
+      const updatedWork = { ...trabajo, photos: [...(trabajo.photos || []), savedUri] }
+      const worksJson = await AsyncStorage.getItem("trabajos")
+      const works = worksJson ? JSON.parse(worksJson) : []
+      await AsyncStorage.setItem("trabajos", JSON.stringify(works.map((item) => item.id === trabajo.id ? updatedWork : item)))
+      setTrabajo(updatedWork)
+      setPhotoUris((currentUris) => [...currentUris, savedUri])
+    } catch (error) {
+      console.error("Error al agregar foto al trabajo:", error)
+      showCustomAlert("Error", "No se pudo agregar la foto al trabajo.")
+    }
+  }
+
+  const handleAddPhoto = () => setShowPhotoSourceModal(true)
+
+  const handleChoosePhotoSource = (source) => {
+    setShowPhotoSourceModal(false)
+    setTimeout(async () => {
+      try {
+        const isCamera = source === "camera"
+        const permission = isCamera
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync()
+        if (permission.status !== "granted") {
+          showCustomAlert("Permiso denegado", isCamera ? "Necesitamos permiso para usar la cámara." : "Necesitamos permiso para acceder a tus fotos.")
+          return
+        }
+
+        const result = isCamera
+          ? await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.75 })
+          : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.75 })
+        if (!result.canceled && result.assets?.[0]?.uri) await savePhotoToWork(result.assets[0].uri)
+      } catch (error) {
+        console.error("Error al seleccionar foto del trabajo:", error)
+        showCustomAlert("Error", "No se pudo abrir la cámara o la galería.")
+      }
+    }, 300)
+  }
+
   // NUEVO: Función para llamar al número de teléfono
   const handleCall = () => {
     if (trabajo.telefono) {
@@ -450,7 +607,7 @@ const WorkDetailScreen = () => {
     const trabajoActualizado = {
       ...trabajo,
       costoManoDeObra: costoManoDeObraActualizado,
-      costoTotal: (Number.parseFloat(trabajo.costoMateriales) || 0) + costoManoDeObraActualizado,
+      costoTotal: parseCurrencyAmount(trabajo.costoMateriales) + costoManoDeObraActualizado,
     }
 
     setTrabajo(trabajoActualizado)
@@ -469,7 +626,7 @@ const WorkDetailScreen = () => {
   }
 
   const renderPhotoItem = ({ item, index }) => (
-    <TouchableOpacity style={styles.photoPreviewContainer} onPress={() => openPhotoModal(index)} activeOpacity={0.8}>
+    <TouchableOpacity key={`${item}-${index}`} style={styles.photoPreviewContainer} onPress={() => openPhotoModal(index)} activeOpacity={0.8}>
       <Image
         source={{ uri: item }}
         style={styles.photoPreview}
@@ -483,210 +640,164 @@ const WorkDetailScreen = () => {
 
   const renderMaterialItem = ({ item, index }) => (
     <View style={styles.materialItem}>
-      <View style={styles.materialHeader}>
-        <Text style={styles.materialNumber}>{index + 1}.</Text>
-        <Text style={styles.materialDescription}>{item.descripcion}</Text>
-        <TouchableOpacity style={styles.deleteMaterialButton} onPress={() => handleDeleteMaterial(index)}>
-         <Ionicons name="trash-outline" size={24} color="#F44336" />
-        </TouchableOpacity>
+      <View style={styles.materialCopy}>
+        <Text style={styles.materialDescription} numberOfLines={2}>{String(item?.descripcion || "Material")}</Text>
+        <Text style={styles.materialQuantity}>Cant. {String(item?.cantidad ?? "—")} · Unitario: ${formatCurrency(item?.precio)}</Text>
       </View>
-      <View style={styles.materialDetails}>
-        <Text style={styles.materialQuantity}>Cantidad: {item.cantidad}</Text>
-        <Text style={styles.materialPrice}>
-          Precio c/u: ${formatCurrency(item.precio)}
-        </Text>
-        <Text style={styles.materialSubtotal}> Subtotal: $ 
-          {formatCurrency(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio))}
-        </Text>
-      </View>
+      <Text style={styles.materialSubtotal}>${formatCurrency(Number(item?.cantidad) * parseCurrencyAmount(item?.precio))}</Text>
+      <TouchableOpacity style={styles.deleteMaterialButton} onPress={() => handleDeleteMaterial(index)} accessibilityLabel={`Eliminar ${item?.descripcion || "material"}`}>
+        <Ionicons name="trash-outline" size={17} color="#9AA7A1" />
+      </TouchableOpacity>
     </View>
   )
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top", "left", "right", "bottom"]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back-outline" size={28} color="#fff" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backButton} accessibilityLabel="Volver">
+          <Ionicons name="arrow-back" size={21} color="#1A1C1A" />
         </TouchableOpacity>
-         <Text style={styles.title}>Trabajo</Text>
+        <Text style={styles.headerTitle}>Detalle del trabajo</Text>
+        <TouchableOpacity onPress={handleExportPdf} style={styles.moreButton} accessibilityRole="button" accessibilityLabel="Generar PDF del trabajo" disabled={isExportingPdf}>
+          <Ionicons name={isExportingPdf ? "hourglass-outline" : "document-text-outline"} size={19} color="#087F75" />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setReprogramModalVisible(true)} style={styles.moreButton} accessibilityLabel="Más acciones">
+          <Ionicons name="ellipsis-horizontal" size={21} color="#3D4947" />
+        </TouchableOpacity>
       </View>
-      
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        
-        <View style={styles.detailsContainer}>
-        {/* Estado del pago */} 
-          <View style={[styles.detailItem, { borderLeftWidth: 4, borderLeftColor: getEstadoPagoColor(trabajo.estadoPago) }]}>   
-            <View style={styles.estadoContainer}>  
-              <View style={styles.estadoInfo}>
-                  <Text style={styles.label}>Estado de Pago:</Text> 
-                <View style={styles.estadoBadge}>    
-                  <Ionicons
-                    name={getEstadoPagoIcon(trabajo.estadoPago)}
-                    size={20}
-                    color={getEstadoPagoColor(trabajo.estadoPago)}
-                  />  
-                  <Text style={[styles.estadoText, { color: getEstadoPagoColor(trabajo.estadoPago), marginLeft: 5 }]}>
-                    {trabajo.estadoPago || "Pendiente"}  
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.botonesContainer}>
-                {trabajo.estadoPago !== "Pagado" && trabajo.estadoPago !== "Terminado, falta pago" && (
-                  <TouchableOpacity
-                    style={[styles.estadoButton, styles.estadoButtonSuccess]}
-                    onPress={handleTerminarTrabajo}
-                    activeOpacity={0.8}
-                  >
-                        <Ionicons name="checkmark-circle" size={24} color="white" />   
-                    <Text style={styles.estadoButtonText}>Terminado</Text>  
-                  </TouchableOpacity>
-                )}
-                 
-                {trabajo.estadoPago === "Terminado, falta pago" && (
-                  <TouchableOpacity
-                    style={[styles.estadoButton, styles.estadoButtonSuccess]}
-                    onPress={handleMarcarPagado}
-                    activeOpacity={0.8}
-                  >
-                        <Ionicons name="checkmark-circle" size={24} color="white" />   
-                    <Text style={styles.estadoButtonText}>Marcar como Pagado</Text>  
-                  </TouchableOpacity>
-                )}
-                 
-                {trabajo.estadoPago !== "Cancelado" && trabajo.estadoPago !== "Pagado" && trabajo.estadoPago !== "Terminado, falta pago" && (
-                  <TouchableOpacity
-                    style={[styles.estadoButton, styles.estadoButtonDanger]}
-                    onPress={handleMarcarCancelado}
-                    activeOpacity={0.8}
-                  >
-                        <Ionicons name="close-circle" size={24} color="white" />   
-                    <Text style={styles.estadoButtonText}>Marcar como Cancelado</Text>  
-                  </TouchableOpacity>
-                )}
-                 
-              </View>
-            </View>
-          </View>
-            {/* Información del cliente */} 
-          <View style={styles.detailItem}>
-               <Text style={styles.label}>Cliente:</Text>  
-            <Text style={styles.value}>{trabajo.clienteNombre}</Text> 
-          </View>
-            {/* Campo de domicilio */} 
-          <View style={styles.detailItem}>
-               <Text style={styles.label}>Domicilio:</Text> 
-            <View style={styles.editableContainer}>
-                
-              <TextInput
-                style={styles.editableInput}
-                value={editedAddress}
-                onChangeText={setEditedAddress}
-                editable={true}
-                multiline={true}
-              />
-                 
-              <TouchableOpacity onPress={handleSaveAddress} style={styles.saveButton}>
-                  <Ionicons name="save-outline" size={24} color="#003366" /> 
-              </TouchableOpacity>
-            </View>
-             
-          </View>
-            {/* Telefono con iconos de llamada y WhatsApp */} 
-          <View style={styles.detailItem}>
-               <Text style={styles.label}>Teléfono:</Text>  
-            <View style={styles.phoneContainer}>
-                  <Text style={styles.value}>{trabajo.telefono}</Text> 
-              <View style={styles.phoneIcons}>
-                <TouchableOpacity onPress={handleCall} style={styles.phoneButton}>
-                     <Ionicons name="call-outline" size={24} color="#003366" /> 
-                </TouchableOpacity>
-                 
-                <TouchableOpacity onPress={handleWhatsApp} style={styles.phoneButton}>
-                     <Ionicons name="logo-whatsapp" size={24} color="#25D366" /> 
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-           
-          <View style={[styles.detailItem, styles.dateDetailItem]}>
-            <View style={styles.dateIconContainer}>
-               <Ionicons name="calendar" size={32} color="#2F4550" />
-            </View>
-            <View style={styles.dateTextContainer}>
-              <Text style={styles.dateLabel}>Fecha Programada:</Text>
-              <Text style={styles.dateValue}>
-                {format(new Date(trabajo.fecha), "EEEE dd 'de' MMMM", { locale: es })}
-              </Text>
-              <Text style={styles.timeValue}>
-                {format(new Date(trabajo.fecha), "HH:mm 'hs'", { locale: es })}
-              </Text>
-            </View>
-          </View>
-           
-          <View style={styles.detailItem}>
-               <Text style={styles.label}>Tipo de Trabajo:</Text>  
-            <Text style={styles.value}>{trabajo.tipoTrabajo || "No especificado"}</Text> 
-          </View>
-           
-          <View style={styles.detailItem}>
-               <Text style={styles.label}>Descripción del trabajo:</Text>  
-            <Text style={styles.value}>{trabajo.trabajo}</Text> 
-          </View>
-            {/* Sección de materiales */}
-          <View style={styles.materialesSection}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Materiales</Text>
-              <TouchableOpacity style={styles.addButton} onPress={() => setShowAddMaterialModal(true)}>
-                <Ionicons name="add-circle-outline" size={20} color="#FFF" />
-                <Text style={styles.addButtonText}>Agregar</Text>
-              </TouchableOpacity>
-            </View>
 
-            {trabajo.materiales && trabajo.materiales.length > 0 ? (
-              <FlatList data={trabajo.materiales} renderItem={renderMaterialItem} keyExtractor={(item, index) => index.toString()} scrollEnabled={false}/>
-            ) : (
-              <Text style={styles.noMaterialsText}>No hay materiales registrados.</Text>
-            )}
-          </View>
-          <View style={styles.costosSection}>
-            <View style={styles.costoItem}>
-              <Text style={styles.costoLabel}>Costo de Materiales:</Text>
-              <Text style={styles.costoValue}>${formatCurrency(trabajo.costoMateriales)}</Text>
-            </View>
-
-            <View style={styles.costoItem}>
-              <Text style={styles.costoLabel}>Costo de Mano de Obra:</Text>
-              <View style={styles.manoDeObraContainer}>
-                <Text style={styles.costoValue}>${formatCurrency(trabajo.costoManoDeObra)}</Text>
-                <TouchableOpacity onPress={() => setShowEditPriceModal(true)} style={styles.editPriceIconBtn}>
-                  <Ionicons name="pencil" size={18} color="#2F4550" />
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={[styles.costoItem, styles.totalFinal]}>
-              <Text style={styles.totalLabel}>Costo Total:</Text>
-              <Text style={styles.totalValue}>${formatCurrency(costoTotal)}</Text>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryTopRow}>
+            <Text style={styles.workTypeBadge}>{(trabajo.tipoTrabajo || "TRABAJO").toLocaleUpperCase("es-AR")}</Text>
+            <View style={[styles.paymentBadge, { backgroundColor: `${getEstadoPagoColor(trabajo.estadoPago)}18` }]}>
+              <Ionicons name={getEstadoPagoIcon(trabajo.estadoPago)} size={14} color={getEstadoPagoColor(trabajo.estadoPago)} />
+              <Text style={[styles.paymentBadgeText, { color: getEstadoPagoColor(trabajo.estadoPago) }]}>{trabajo.estadoPago || "Pendiente"}</Text>
             </View>
           </View>
-           {/* Fotos del trabajo */}
-          <View style={styles.photoSection}>
-             <Text style={styles.sectionTitle}>Fotos del Trabajo</Text>
-            {photoUris.length > 0 ? (
-              <FlatList data={photoUris} renderItem={renderPhotoItem} keyExtractor={(item, index) => index.toString()} horizontal showsHorizontalScrollIndicator={false} style={styles.photoList} />
-            ) : (
-              <Text style={styles.noPhotosText}>
-                {trabajo.photos && trabajo.photos.length > 0 ? "Las fotos no están disponibles" : "No hay fotos para este trabajo"}
-              </Text>
-            )}
+          <Text style={styles.workTitle}>{trabajo.trabajo || trabajo.tipoTrabajo || "Trabajo programado"}</Text>
+          <View style={styles.summaryDivider} />
+          <View style={styles.summaryMetaRow}>
+            <Ionicons name="business-outline" size={18} color="#087F75" />
+            <Text style={styles.summaryMetaText} numberOfLines={1}>{trabajo.clienteNombre || "Cliente"}</Text>
+          </View>
+          <View style={styles.summaryMetaRow}>
+            <Ionicons name="time-outline" size={18} color="#087F75" />
+            <Text style={styles.summaryMetaText}>{format(new Date(trabajo.fecha), "EEEE d MMM · HH:mm 'hs'", { locale: es })}</Text>
+          </View>
+          <View style={styles.summaryMetaRow}>
+            <Ionicons name="construct-outline" size={18} color="#087F75" />
+            <Text style={styles.summaryProgressText}>{trabajo.estadoPago === "Pagado" ? "Trabajo cobrado" : trabajo.estadoPago === "Cancelado" ? "Trabajo cancelado" : "Trabajo programado"}</Text>
           </View>
         </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeading}>
+            <View style={styles.cardTitleGroup}><Ionicons name="person-circle-outline" size={21} color="#00685F" /><Text style={styles.cardTitle}>Cliente y ubicación</Text></View>
+            <TouchableOpacity onPress={handleToggleAddressEdit} style={[styles.iconButton, isEditingAddress && styles.iconButtonActive]} accessibilityRole="button" accessibilityLabel={isEditingAddress ? "Guardar dirección" : "Editar dirección"}>
+              <Ionicons name={isEditingAddress ? "checkmark" : "create-outline"} size={18} color={isEditingAddress ? "#FFFFFF" : "#087F75"} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.clientDetailsBox}>
+            <Text style={styles.detailLabel}>CLIENTE</Text>
+            <Text style={styles.clientValue}>{trabajo.clienteNombre || "Cliente"}</Text>
+            <Text style={styles.detailLabel}>TELÉFONO</Text>
+            <Text style={styles.clientValue}>{trabajo.telefono || "Sin teléfono registrado"}</Text>
+            <Text style={styles.detailLabel}>DIRECCIÓN DE OBRA</Text>
+            {isEditingAddress ? (
+              <TextInput style={styles.addressInput} value={editedAddress} onChangeText={setEditedAddress} placeholder="Ingresá la dirección del trabajo" placeholderTextColor="#89968F" multiline />
+            ) : (
+              <Text style={styles.clientValue}>{trabajo.domicilio || "Sin dirección registrada"}</Text>
+            )}
+          </View>
+          <View style={styles.contactActions}>
+            <TouchableOpacity onPress={handleCall} style={styles.contactAction}>
+              <Ionicons name="call-outline" size={18} color="#00685F" /><Text style={styles.contactActionText}>Llamar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleWhatsApp} style={styles.contactAction}>
+              <Ionicons name="logo-whatsapp" size={18} color="#087F75" /><Text style={styles.contactActionText}>WhatsApp</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeading}>
+            <View style={styles.cardTitleGroup}><Ionicons name="calendar-outline" size={20} color="#00685F" /><Text style={styles.cardTitle}>Fecha y horario</Text></View>
+          </View>
+          <View style={styles.scheduleDetails}>
+            <Ionicons name="calendar-outline" size={19} color="#596578" />
+            <View style={styles.scheduleCopy}>
+              <Text style={styles.scheduleDate}>{format(new Date(trabajo.fecha), "EEEE d 'de' MMMM", { locale: es })}</Text>
+              <Text style={styles.scheduleTime}>{format(new Date(trabajo.fecha), "HH:mm 'hs'", { locale: es })}</Text>
+            </View>
+          </View>
+          <TouchableOpacity style={styles.rescheduleButton} onPress={handleReprogramar}>
+            <Ionicons name="calendar-clear-outline" size={17} color="#596578" /><Text style={styles.rescheduleButtonText}>Reprogramar cita</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeading}>
+            <View style={styles.cardTitleGroup}><Ionicons name="file-tray-stacked-outline" size={20} color="#00685F" /><Text style={styles.cardTitle}>Materiales e insumos ({trabajo.materiales?.length || 0})</Text></View>
+            <TouchableOpacity style={styles.inlineAddButton} onPress={() => setShowAddMaterialModal(true)}><Ionicons name="add" size={18} color="#00685F" /><Text style={styles.inlineAddText}>Agregar</Text></TouchableOpacity>
+          </View>
+          {trabajo.materiales?.length ? (
+            <FlatList data={trabajo.materiales} renderItem={renderMaterialItem} keyExtractor={(_, index) => `material-${index}`} scrollEnabled={false} />
+          ) : (
+            <View style={styles.emptyMaterials}><Text style={styles.emptyText}>Todavía no hay materiales agregados.</Text><TouchableOpacity onPress={() => setShowAddMaterialModal(true)}><Text style={styles.inlineAddText}>Agregar el primero</Text></TouchableOpacity></View>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeading}><View style={styles.cardTitleGroup}><Ionicons name="receipt-outline" size={20} color="#00685F" /><Text style={styles.cardTitle}>Resumen de costos</Text></View></View>
+          <View style={styles.costRow}><Text style={styles.costLabel}>Materiales</Text><Text style={styles.costValue}>${formatCurrency(trabajo.costoMateriales)}</Text></View>
+          <View style={styles.costRow}>
+            <Text style={styles.costLabel}>Mano de obra</Text>
+            <View style={styles.costValueGroup}>
+              <TouchableOpacity onPress={openEditPriceModal} style={styles.editPriceButton} accessibilityRole="button" accessibilityLabel="Editar mano de obra"><Ionicons name="pencil" size={14} color="#087F75" /></TouchableOpacity>
+              <Text style={styles.costValue}>${formatCurrency(trabajo.costoManoDeObra)}</Text>
+            </View>
+          </View>
+          <View style={styles.totalRow}><Text style={styles.totalLabel}>TOTAL ESTIMADO</Text><View style={styles.totalAmountGroup}><Text style={styles.totalValue}>${formatCurrency(costoTotal)}</Text><Text style={styles.currencyLabel}>ARS</Text></View></View>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeading}>
+            <View style={styles.cardTitleGroup}><Ionicons name="camera-outline" size={20} color="#00685F" /><Text style={styles.cardTitle}>Fotos de obra y taller ({photoUris.length})</Text></View>
+            <Text style={styles.photoSectionNote}>Inspección técnica</Text>
+          </View>
+          {photoUris.length ? (
+            <View style={styles.photoGrid}>{photoUris.map((uri, index) => <View key={`${uri}-${index}`} style={styles.photoGridItem}>{renderPhotoItem({ item: uri, index })}</View>)}
+              {photoUris.length % 2 === 1 && <View style={styles.photoGridSpacer} />}
+            </View>
+          ) : (
+            <Text style={styles.noPhotosText}>{trabajo.photos?.length ? "Las fotos guardadas no están disponibles." : "No hay fotos adjuntas a este trabajo."}</Text>
+          )}
+          <TouchableOpacity style={styles.addPhotoButton} onPress={handleAddPhoto}>
+            <Ionicons name="camera-outline" size={19} color="#596578" /><Text style={styles.addPhotoText}>Añadir foto del montaje</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
+
+      <View style={styles.bottomActions}>
+        {trabajo.estadoPago === "Cancelado" ? (
+          <TouchableOpacity style={styles.primaryAction} onPress={handleReprogramar}><Ionicons name="calendar-outline" size={19} color="#FFFFFF" /><Text style={styles.primaryActionText}>Reprogramar trabajo</Text></TouchableOpacity>
+        ) : trabajo.estadoPago === "Pagado" ? (
+          <View style={styles.paidState}><Ionicons name="checkmark-circle" size={19} color="#087F75" /><Text style={styles.paidStateText}>Trabajo pagado</Text></View>
+        ) : (
+          <TouchableOpacity style={styles.primaryAction} onPress={trabajo.estadoPago === "Terminado, falta pago" ? handleMarcarPagado : handleTerminarTrabajo}>
+            <Ionicons name="checkmark-circle-outline" size={19} color="#FFFFFF" /><Text style={styles.primaryActionText}>{trabajo.estadoPago === "Terminado, falta pago" ? "Marcar como pagado" : "Marcar terminado"}</Text>
+          </TouchableOpacity>
+        )}
+        {trabajo.estadoPago !== "Cancelado" && trabajo.estadoPago !== "Pagado" && trabajo.estadoPago !== "Terminado, falta pago" && (
+          <TouchableOpacity style={styles.cancelWorkButton} onPress={handleMarcarCancelado}><Ionicons name="close-circle-outline" size={17} color="#3D4947" /><Text style={styles.cancelWorkText}>Cancelar trabajo</Text></TouchableOpacity>
+        )}
+      </View>
       {/* Modal de confirmación para reprogramar/eliminar */}
-      <Modal visible={reprogramModalVisible} transparent={true} animationType="slide" onRequestClose={() => setReprogramModalVisible(false)}>
+      <Modal visible={reprogramModalVisible} transparent={true} animationType="slide" statusBarTranslucent navigationBarTranslucent onRequestClose={() => setReprogramModalVisible(false)}>
         <View style={styles.modalContainerReprogramar}>
           <View style={styles.modalContentReprogramar}>
-             <Text style={styles.modalTitleReprogramar}>¿Qué deseas hacer con este trabajo?</Text>
+             <Text style={styles.modalTitleReprogramar}>{trabajo.estadoPago === "Cancelado" ? "Trabajo cancelado" : "Opciones del trabajo"}</Text>
             <TouchableOpacity style={styles.confirmButtonReprogramar} onPress={handleReprogramar}>
               <Ionicons name="calendar-outline" size={24} color="white" />
               <Text style={styles.confirmButtonTextReprogrmar}>Reprogramar</Text>
@@ -720,14 +831,20 @@ const WorkDetailScreen = () => {
         </View>
       </Modal>
     
-      <Modal visible={showEditPriceModal} transparent={true} animationType="fade" onRequestClose={() => setShowEditPriceModal(false)}>
+      <Modal visible={showEditPriceModal} transparent={true} animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={() => setShowEditPriceModal(false)}>
         <View style={styles.modalContainer}>
           <View style={styles.addMaterialModalContent}>
-            <Text style={styles.modalTitle}>Editar Precio de Mano de Obra</Text>
-            <TextInput style={styles.input} placeholder="Nuevo precio" value={newWorkPrice} onChangeText={(text) => setNewWorkPrice(formatCurrency(text.replace(/\D/g, "")))} keyboardType="numeric"/> 
+            <View style={styles.priceModalIcon}><Ionicons name="cash-outline" size={22} color="#087F75" /></View>
+            <Text style={styles.modalTitle}>Editar mano de obra</Text>
+            <Text style={styles.modalHint}>Importe en pesos argentinos</Text>
+            <View style={styles.currencyInputShell}>
+              <Text style={styles.currencyInputPrefix}>$</Text>
+              <TextInput style={styles.currencyInput} placeholder="0" placeholderTextColor="#89968F" value={newWorkPrice} onChangeText={(text) => setNewWorkPrice(formatCurrency(text.replace(/\D/g, "")))} keyboardType="numeric" accessibilityLabel="Precio de mano de obra en pesos" />
+              <Text style={styles.currencyInputSuffix}>ARS</Text>
+            </View>
             <TouchableOpacity style={styles.addButtonModal} onPress={handleUpdateWorkPrice}>
-              <Ionicons name="save-outline" size={24} color="white" />
-              <Text style={styles.addButtonModalText}>Guardar Precio</Text>
+              <Ionicons name="checkmark-circle-outline" size={19} color="white" />
+              <Text style={styles.addButtonModalText}>Guardar precio</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelModalButton} onPress={() => setShowEditPriceModal(false)}>
                <Text style={styles.cancelModalButtonText}>Cancelar</Text>
@@ -735,9 +852,64 @@ const WorkDetailScreen = () => {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={showPhotoSourceModal} transparent animationType="slide" statusBarTranslucent navigationBarTranslucent onRequestClose={() => setShowPhotoSourceModal(false)}>
+        <View style={styles.photoSourceOverlay}>
+          <TouchableOpacity style={styles.photoSourceBackdrop} activeOpacity={1} onPress={() => setShowPhotoSourceModal(false)} accessibilityLabel="Cerrar opciones de foto" />
+          <View style={styles.photoSourceSheet}>
+            <View style={styles.photoSourceHandle} />
+            <View style={styles.photoSourceHeading}>
+              <View style={styles.photoSourceHeadingIcon}><Ionicons name="camera-outline" size={21} color="#087F75" /></View>
+              <View style={styles.photoSourceHeadingCopy}>
+                <Text style={styles.photoSourceTitle}>Añadir foto del montaje</Text>
+                <Text style={styles.photoSourceSubtitle}>Elegí cómo querés adjuntarla al trabajo.</Text>
+              </View>
+              <TouchableOpacity style={styles.photoSourceClose} onPress={() => setShowPhotoSourceModal(false)} accessibilityRole="button" accessibilityLabel="Cerrar">
+                <Ionicons name="close" size={20} color="#596578" />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.photoSourceOption} onPress={() => handleChoosePhotoSource("camera")} accessibilityRole="button">
+              <View style={styles.photoSourceOptionIcon}><Ionicons name="camera" size={20} color="#087F75" /></View>
+              <View style={styles.photoSourceOptionCopy}>
+                <Text style={styles.photoSourceOptionTitle}>Tomar una foto</Text>
+                <Text style={styles.photoSourceOptionDescription}>Abrir la cámara del dispositivo</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#89968F" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.photoSourceOption} onPress={() => handleChoosePhotoSource("library")} accessibilityRole="button">
+              <View style={styles.photoSourceOptionIcon}><Ionicons name="images-outline" size={20} color="#087F75" /></View>
+              <View style={styles.photoSourceOptionCopy}>
+                <Text style={styles.photoSourceOptionTitle}>Elegir de la galería</Text>
+                <Text style={styles.photoSourceOptionDescription}>Seleccionar una imagen guardada</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#89968F" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.photoSourceCancel} onPress={() => setShowPhotoSourceModal(false)}>
+              <Text style={styles.photoSourceCancelText}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
       
-      {showDatePicker && (<DateTimePicker value={newDate} mode="date" display="default" onChange={onDateChange} minimumDate={new Date()}/>)}
-       {showTimePicker && <DateTimePicker value={newDate} mode="time" display="default" onChange={onTimeChange} />}
+      {showDatePicker && (
+        <DateTimePicker
+          value={newDate}
+          mode="date"
+          display="default"
+          onValueChange={onDateValueChange}
+          onDismiss={() => setShowDatePicker(false)}
+          minimumDate={new Date()}
+        />
+      )}
+      {showTimePicker && (
+        <DateTimePicker
+          value={newDate}
+          mode="time"
+          display="default"
+          onValueChange={onTimeValueChange}
+          onDismiss={() => setShowTimePicker(false)}
+        />
+      )}
     
       <Modal
         visible={modalVisible}
@@ -750,7 +922,7 @@ const WorkDetailScreen = () => {
             <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCloseButton}>
                <Ionicons name="close" size={30} color="white" />
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>
+            <Text style={styles.imageModalTitle}>
                {selectedPhotoIndex + 1} de {photoUris.length}
             </Text>
           </View>
@@ -777,7 +949,7 @@ const WorkDetailScreen = () => {
       </Modal>
 
       {/* CUSTOM ALERT MODAL */}
-      <Modal visible={alertConfig.visible} transparent={true} animationType="fade" onRequestClose={hideCustomAlert}>
+      <Modal visible={alertConfig.visible} transparent={true} animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={hideCustomAlert}>
         <View style={styles.alertOverlay}>
           <View style={styles.alertBox}>
             <Text style={styles.alertTitle}>{alertConfig.title}</Text>
@@ -807,889 +979,137 @@ const WorkDetailScreen = () => {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F8F9FA", 
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 20,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#2F4550", 
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    paddingBottom: 20,
-    paddingTop: 50,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    marginRight: 15,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#FFF",
-    flex: 1,
-    textAlign: "center",
-    marginRight: 40, 
-  },
-  detailsContainer: {
-    flex: 1,
-    backgroundColor: "#FFF", 
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 25, 
-    marginTop: -10,
-  },
-  detailItem: {
-    backgroundColor: "#F5F7FA", 
-    borderRadius: 12,
-    padding: 16, 
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA", 
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  estadoContainer: {
-    flexDirection: "column",
-    alignItems: "stretch",
-  },
-  estadoInfo: {
-    marginBottom: 15,
-  },
-  estadoBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: 10,
-    flex: 1,
-    flexWrap: "wrap",
-  },
-  estadoText: {
-    fontSize: 18,
-    fontWeight: "600", 
-    color: "#2F4550", 
-    alignItems: "left",
-  },
-  botonesContainer: {
-    flexDirection: "column",
-    gap: 12,
-    maxWidth: 340,
-  },
-  estadoButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    textAlign: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-    minHeight: 50,
-  },
-  estadoButtonSuccess: {
-    backgroundColor: "#4CAF50",
-    shadowColor: "#4CAF50",
-  },
-  estadoButtonDanger: {
-    backgroundColor: "#F44336",
-    shadowColor: "#F44336",
-  },
-  estadoButtonText: {
-    color: "white",
-    fontWeight: "600", 
-    marginLeft: 8,
-    fontSize: 16,
-    textAlign: "center",
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: "600", 
-    color: "#2F4550", 
-    marginBottom: 8,
-    alignItems: "flex-start",
-  },
-  value: {
-    fontSize: 16, 
-    fontWeight: "400", 
-    color: "#2F4550", 
-    paddingLeft: 0, 
-  },
-  costosSection: {
-    backgroundColor: "#F8F9FA", 
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    borderWidth: 2,
-    borderColor: "#E1E5EA", 
-  },
-  costoItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12, 
-    paddingVertical: 4,
-  },
-  costoLabel: {
-    fontSize: 16,
-    color: "#2F4550", 
-    flex: 1, 
-  },
-  costoValueMateriales: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-    right: 50, 
-  },
-  costoValueManoObra: {
-    fontSize: 16, 
-    fontWeight: "600",
-    color: "#2F4550", 
-    right: 20, 
-  },
-
-  costoValue: {
-    fontSize: 16, 
-    fontWeight: "600",
-    color: "#2F4550", 
-    textAlign: "right", 
-  },
-  totalFinal: {
-    borderTopWidth: 2,
-    borderTopColor: "#2F4550",
-    paddingTop: 12,
-    marginTop: 8, 
-    marginBottom: 0, 
-  },
-  totalLabel: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550", 
-    flex: 1, 
-  },
-  totalValue: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550", 
-    textAlign: "right", 
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 15,
-    paddingHorizontal: 0, 
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-    flex: 1, 
-  },
-  addButton: {
-    backgroundColor: "#2F4550",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 8, 
-    paddingHorizontal: 16,
-    borderRadius: 8, 
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  addButtonText: {
-    color: "#FFF",
-    fontSize: 14, 
-    fontWeight: "600",
-    marginLeft: 6,
-  },
-  materialesSection: {
-    backgroundColor: "#F8F9FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  materialQuantity: {
-    fontSize: 14,
-    color: "#555",
-    marginBottom: 4,
-    left: 0, 
-  },
-  materialPrice: {
-    fontSize: 14,
-    color: "#555",
-    marginBottom: 4,
-    left: -31, 
-  },
-  materialSubtotal: {
-    fontSize: 14,
-    color: "#555",
-    fontWeight: "600",
-    left: -31, 
-  },
-  materialItem: {
-    backgroundColor: "#FFF",
-    borderRadius: 8,
-    padding: 15,
-    marginBottom: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: "#2F4550",
-    shadowColor: "#000", 
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  materialHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between", 
-    marginBottom: 8,
-  },
-  materialNumber: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-    marginRight: 8,
-    minWidth: 20,
-  },
-  materialDescription: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-    flex: 1,
-  },
-  materialDetails: {
-    marginLeft: 28,
-    paddingTop: 4,
-  },
-  costosSection: {
-    backgroundColor: "#F8F9FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    borderWidth: 1, 
-    borderColor: "#E1E5EA",
-  },
-  costoItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12, 
-    paddingVertical: 4, 
-  },
-  costoLabel: {
-    fontSize: 16,
-    color: "#2F4550",
-    flex: 1, 
-  },
-  costoValue: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-    textAlign: "right", 
-  },
-  totalFinal: {
-    borderTopWidth: 2,
-    borderTopColor: "#2F4550",
-    paddingTop: 12, 
-    marginTop: 8, 
-    marginBottom: 0, 
-  },
-  totalLabel: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-    flex: 1, 
-  },
-  totalValue: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-    textAlign: "right",
-  },
-  editPriceButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    paddingVertical: 4, 
-    paddingHorizontal: 8,
-  },
-  noMaterialsText: {
-    fontSize: 16,
-    color: "#666",
-    textAlign: "center", 
-    fontStyle: "italic",
-    paddingVertical: 20, 
-  },
-  phoneContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  phoneIcons: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  phoneButton: {
-    padding: 10,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    marginLeft: 10,
-  },
-  editableContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  editableInput: {
-    flex: 1,
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 16,
-    marginRight: 10,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  saveButton: {
-    padding: 10,
-    borderRadius: 20,
-    backgroundColor: "transparent",
-  },
-  modalContainerReprogramar:{
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.5)",
-
-  },
-  modalContentReprogramar:{
-    backgroundColor: "#FFF",
-    borderRadius: 20,
-    padding: 25,
-    width: "90%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-    alignItems: "center",
-  },
-  modalTitleReprogramar:{
-    marginBottom: 10,
-    textAlign: "center",
-    fontSize: 20,
-    fontWeight: "700",
-  },
-  confirmButtonReprogramar:{
-    backgroundColor: "#2F4550", 
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  confirmButtonTextReprogrmar:{
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",  
-    marginLeft: 10,
-  },
-  deleteButtonReprogramar:{
-    backgroundColor: "red",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  deleteButtonTextEliminar:{
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  modalContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.8)",
-  },
-  modalTitle: {
-    marginBottom: 20,
-    textAlign: "center",
-    fontSize: 20,
-    fontWeight: "700",
-  },
-  imageModalContainer: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.95)",
-  },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingTop: 50,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
-  modalCloseButton: {
-    padding: 10,
-  },
-  modalImageContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  modalImage: {
-    width: Dimensions.get("window").width,
-    height: Dimensions.get("window").height * 0.7,
-  },
-  navButton: {
-    position: "absolute",
-    top: "50%",
-    backgroundColor: "rgba(0,0,0,0.6)",
-    borderRadius: 25,
-    padding: 15,
-    marginTop: -25,
-  },
-  prevButton: {
-    left: 20,
-  },
-  nextButton: {
-    right: 20,
-  },
-  addMaterialModalContent: {
-    backgroundColor: "#FFF", 
-    borderRadius: 20,
-    padding: 25, // Updated padding
-    width: "90%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  input: {
-    width: "100%",
-    backgroundColor: "#F5F7FA", 
-    borderRadius: 12, 
-    padding: 16, 
-    marginBottom: 20, 
-    fontSize: 16,
-    color: "#2F4550",
-    borderWidth: 1,
-    borderColor: "#E1E5EA", 
-  },
-  addButtonModal: {
-    backgroundColor: "#2F4550", 
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 18, 
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  addButtonModalText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  phoneContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  phoneIcons: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  phoneButton: {
-    marginLeft: 10,
-  },
-  editableContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  editableInput: {
-    flex: 1,
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 16,
-    marginRight: 10,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  saveButton: {
-    padding: 10,
-    borderRadius: 20,
-    backgroundColor: "transparent",
-  },
-  modalContainerReprogramar:{
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.5)",
-
-  },
-  modalContentReprogramar:{
-    backgroundColor: "#FFF",
-    borderRadius: 20,
-    padding: 25,
-    width: "90%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-    alignItems: "center",
-  },
-  modalTitleReprogramar:{
-    marginBottom: 10,
-    textAlign: "center",
-    fontSize: 20,
-    fontWeight: "700",
-  },
-  confirmButtonReprogramar:{
-    backgroundColor: "#2F4550", 
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  confirmButtonTextReprogrmar:{
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",  
-    marginLeft: 10,
-  },
-  deleteButtonReprogramar:{
-    backgroundColor: "red",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  deleteButtonTextEliminar:{
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  modalContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.8)",
-  },
-  modalTitle: {
-    marginBottom: 20,
-    textAlign: "center",
-    fontSize: 20,
-    fontWeight: "700",
-  },
-  imageModalContainer: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.95)",
-  },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingTop: 50,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
-  modalCloseButton: {
-    padding: 10,
-  },
-  modalImageContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  modalImage: {
-    width: Dimensions.get("window").width,
-    height: Dimensions.get("window").height * 0.7,
-  },
-  navButton: {
-    position: "absolute",
-    top: "50%",
-    backgroundColor: "rgba(0,0,0,0.6)",
-    borderRadius: 25,
-    padding: 15,
-    marginTop: -25,
-  },
-  prevButton: {
-    left: 20,
-  },
-  nextButton: {
-    right: 20,
-  },
-  addMaterialModalContent: {
-    backgroundColor: "#FFF", 
-    borderRadius: 20,
-    padding: 25, // Updated padding
-    width: "90%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  input: {
-    width: "100%",
-    backgroundColor: "#F5F7FA", 
-    borderRadius: 12, 
-    padding: 16, 
-    marginBottom: 20, 
-    fontSize: 16,
-    color: "#2F4550",
-    borderWidth: 1,
-    borderColor: "#E1E5EA", 
-  },
-  addButtonModal: {
-    backgroundColor: "#2F4550", 
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 18, 
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  addButtonModalText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  phoneContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  phoneIcons: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  phoneButton: {
-    padding: 10,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    marginLeft: 10,
-  },
-  noPhotosText: {
-    textAlign: "center",
-    color: "#888",
-    fontStyle: "italic",
-    marginTop: 10,
-  },
-  cancelModalButton: {
-    backgroundColor: "#F44336",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 18,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 0,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  cancelModalButtonText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    textAlign: "center"
-  },
-  dateDetailItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 20,
-  },
-  dateIconContainer: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "#E8EDF2",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 15,
-  },
-  dateTextContainer: {
-    flex: 1,
-  },
-  dateLabel: {
-    fontSize: 16,
-    color: "#666",
-    marginBottom: 4,
-  },
-  dateValue: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-    textTransform: "capitalize",
-    marginBottom: 2,
-  },
-  timeValue: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#4CAF50",
-  },
-  manoDeObraContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  editPriceIconBtn: {
-    marginLeft: 10,
-    padding: 4,
-    backgroundColor: "#E8EDF2",
-    borderRadius: 8,
-  },
-  alertOverlay: {
-      flex: 1,
-      backgroundColor: "rgba(0, 0, 0, 0.5)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 20,
-  },
-  alertBox: {
-      backgroundColor: "#FFF",
-      borderRadius: 15,
-      padding: 20,
-      width: "90%",
-      maxWidth: 400,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 10,
-      elevation: 5,
-  },
-  alertTitle: {
-      fontSize: 18,
-      fontWeight: "bold",
-      color: "#2F4550",
-      marginBottom: 10,
-      textAlign: "center",
-  },
-  alertMessage: {
-      fontSize: 15,
-      color: "#555",
-      marginBottom: 20,
-      textAlign: "center",
-      lineHeight: 22,
-  },
-  alertButtons: {
-      flexDirection: "row",
-      justifyContent: "space-around",
-      gap: 10,
-  },
-  alertButton: {
-      flex: 1,
-      paddingVertical: 12,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-  },
-  alertCancelButton: {
-      backgroundColor: "#F5F7FA",
-      borderWidth: 1,
-      borderColor: "#E1E5EA",
-  },
-  alertConfirmButton: {
-      backgroundColor: "#2196F3",
-  },
-  alertDestructiveButton: {
-      backgroundColor: "#F44336",
-  },
-  alertCancelText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#555",
-  },
-  alertConfirmText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#FFF",
-  },
+  container: { flex: 1, backgroundColor: "#FAF9F6" },
+  header: { minHeight: 54, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: "#EAE7E1", backgroundColor: "#FAF9F6" },
+  backButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: 9 },
+  headerTitle: { flex: 1, textAlign: "center", color: "#1A1C1A", fontSize: 16, fontWeight: "700" },
+  moreButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: 9 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 13, paddingBottom: 20 },
+  summaryCard: { backgroundColor: "#FFFFFF", borderRadius: 16, borderWidth: 1, borderColor: "#EAE7E1", padding: 16, marginBottom: 13, shadowColor: "#0F172A", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  summaryTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 },
+  workTypeBadge: { color: "#3D4947", backgroundColor: "#EFEEEB", borderRadius: 7, paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, fontWeight: "700", overflow: "hidden" },
+  paymentBadge: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderColor: "#E9CFAE", borderRadius: 18, paddingHorizontal: 9, paddingVertical: 5 },
+  paymentBadgeText: { fontSize: 10, fontWeight: "700" },
+  workTitle: { color: "#1A1C1A", fontSize: 21, lineHeight: 27, letterSpacing: -0.4, fontWeight: "800" },
+  summaryDivider: { height: 1, backgroundColor: "#EFEEEB", marginTop: 13, marginBottom: 11 },
+  summaryMetaRow: { flexDirection: "row", alignItems: "center", gap: 9, marginVertical: 4 },
+  summaryMetaText: { flex: 1, color: "#3D4947", fontSize: 13 },
+  summaryProgressText: { flex: 1, color: "#087F75", fontSize: 13, fontWeight: "700" },
+  card: { backgroundColor: "#FFFFFF", borderRadius: 16, borderWidth: 1, borderColor: "#EAE7E1", padding: 16, marginBottom: 13, shadowColor: "#0F172A", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.035, shadowRadius: 3, elevation: 1 },
+  cardHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 28, marginBottom: 13 },
+  cardTitleGroup: { flex: 1, flexDirection: "row", alignItems: "center", gap: 9 },
+  cardTitle: { color: "#1A1C1A", fontSize: 15, fontWeight: "700" },
+  iconButton: { width: 36, height: 36, borderRadius: 11, backgroundColor: "#EAF5F2", borderWidth: 1, borderColor: "#CEE5DF", alignItems: "center", justifyContent: "center" },
+  iconButtonActive: { backgroundColor: "#087F75", borderColor: "#087F75" },
+  clientDetailsBox: { backgroundColor: "#F8F7F4", borderRadius: 12, borderWidth: 1, borderColor: "#EAE7E1", padding: 13 },
+  detailLabel: { color: "#596578", fontSize: 10, fontWeight: "700", letterSpacing: 0.5, marginBottom: 3, marginTop: 8 },
+  clientValue: { color: "#1A1C1A", fontSize: 14, lineHeight: 20 },
+  addressInput: { minHeight: 45, borderWidth: 1, borderColor: "#D9DFDC", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 9, color: "#1A1C1A", fontSize: 13, backgroundColor: "#FFFFFF", textAlignVertical: "top" },
+  contactActions: { flexDirection: "row", gap: 10, marginTop: 12 },
+  contactAction: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderWidth: 1, borderColor: "#D9DFDC", borderRadius: 10, backgroundColor: "#FAF9F6" },
+  contactActionText: { color: "#1A1C1A", fontSize: 12, fontWeight: "700" },
+  scheduleDetails: { flexDirection: "row", alignItems: "flex-start", gap: 11, marginBottom: 14 },
+  scheduleCopy: { flex: 1 },
+  scheduleDate: { color: "#1A1C1A", fontSize: 15, fontWeight: "700", textTransform: "capitalize" },
+  scheduleTime: { color: "#3D4947", fontSize: 13, marginTop: 4 },
+  rescheduleButton: { minHeight: 43, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderWidth: 1, borderColor: "#D9DFDC", borderRadius: 9, backgroundColor: "#FFFFFF" },
+  rescheduleButtonText: { color: "#1A1C1A", fontSize: 12, fontWeight: "700" },
+  inlineAddButton: { flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 5 },
+  inlineAddText: { color: "#00685F", fontSize: 12, fontWeight: "700" },
+  materialItem: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: 9, borderBottomWidth: 1, borderBottomColor: "#EFEEEB", paddingVertical: 10 },
+  materialCopy: { flex: 1 },
+  materialDescription: { color: "#1A1C1A", fontSize: 13, fontWeight: "600", lineHeight: 18 },
+  materialQuantity: { color: "#596578", fontSize: 10, fontWeight: "600", marginTop: 3 },
+  materialSubtotal: { color: "#1A1C1A", fontSize: 14, fontWeight: "800" },
+  deleteMaterialButton: { width: 28, height: 32, alignItems: "center", justifyContent: "center" },
+  emptyMaterials: { alignItems: "center", paddingVertical: 12, gap: 7 },
+  emptyText: { color: "#6D7A77", fontSize: 12 },
+  costRow: { minHeight: 36, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  costLabel: { color: "#3D4947", fontSize: 13 },
+  costValueGroup: { flexDirection: "row", alignItems: "center", gap: 6 },
+  costValue: { color: "#1A1C1A", fontSize: 14, fontWeight: "600" },
+  editPriceButton: { width: 29, height: 29, alignItems: "center", justifyContent: "center", borderRadius: 9, backgroundColor: "#EAF5F2", borderWidth: 1, borderColor: "#CEE5DF", marginRight: 2 },
+  totalRow: { minHeight: 61, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderTopColor: "#EFEEEB", marginTop: 7, paddingTop: 10 },
+  totalLabel: { color: "#596578", fontSize: 12, fontWeight: "700" },
+  totalAmountGroup: { alignItems: "flex-end" },
+  totalValue: { color: "#00685F", fontSize: 24, lineHeight: 29, fontWeight: "800" },
+  currencyLabel: { color: "#596578", fontSize: 10, fontWeight: "700", marginTop: 1 },
+  photoSectionNote: { color: "#596578", fontSize: 10, fontWeight: "600" },
+  photoGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 9 },
+  photoGridItem: { width: "48.5%", borderRadius: 11, overflow: "hidden", borderWidth: 1, borderColor: "#D9DFDC" },
+  photoGridSpacer: { width: "48.5%" },
+  photoPreviewContainer: { width: "100%", aspectRatio: 1.4, position: "relative" },
+  photoPreview: { width: "100%", height: "100%", backgroundColor: "#EFEEEB" },
+  photoOverlay: { position: "absolute", right: 7, bottom: 7, width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(15,23,42,0.48)" },
+  noPhotosText: { color: "#6D7A77", fontSize: 12, paddingVertical: 7 },
+  addPhotoButton: { minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderWidth: 1, borderStyle: "dashed", borderColor: "#BCC9C6", borderRadius: 9, marginTop: 11, backgroundColor: "#FFFFFF" },
+  addPhotoText: { color: "#596578", fontSize: 12, fontWeight: "700" },
+  bottomActions: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.OS === "ios" ? 7 : 11, backgroundColor: "rgba(250,249,246,0.98)", borderTopWidth: 1, borderTopColor: "#EAE7E1", gap: 8 },
+  primaryAction: { minHeight: 49, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#00685F", borderRadius: 9, paddingHorizontal: 12 },
+  primaryActionText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
+  cancelWorkButton: { minHeight: 39, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderWidth: 1, borderColor: "#D9DFDC", backgroundColor: "#FFFFFF", borderRadius: 9 },
+  cancelWorkText: { color: "#3D4947", fontSize: 12, fontWeight: "600" },
+  paidState: { minHeight: 49, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 9, backgroundColor: "#E7F5F1" },
+  paidStateText: { color: "#087F75", fontSize: 14, fontWeight: "700" },
+  modalContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(15,23,42,0.45)", padding: 20 },
+  addMaterialModalContent: { width: "100%", maxWidth: 430, backgroundColor: "#FFFFFF", borderRadius: 18, padding: 20, elevation: 8 },
+  modalTitle: { color: "#1A1C1A", fontSize: 17, fontWeight: "700", textAlign: "center", marginBottom: 15 },
+  priceModalIcon: { width: 46, height: 46, borderRadius: 15, backgroundColor: "#EAF5F2", alignSelf: "center", alignItems: "center", justifyContent: "center", marginBottom: 10 },
+  modalHint: { color: "#6D7A77", fontSize: 12, textAlign: "center", marginTop: -7, marginBottom: 16 },
+  currencyInputShell: { minHeight: 56, flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: "#CEE5DF", backgroundColor: "#F8FBFA", borderRadius: 11, paddingHorizontal: 14, marginBottom: 13 },
+  currencyInputPrefix: { color: "#087F75", fontSize: 20, fontWeight: "700", marginRight: 9 },
+  currencyInput: { flex: 1, minWidth: 0, paddingVertical: 10, color: "#1A1C1A", fontSize: 19, fontWeight: "700" },
+  currencyInputSuffix: { color: "#6D7A77", fontSize: 11, fontWeight: "700", marginLeft: 9 },
+  input: { minHeight: 46, borderWidth: 1, borderColor: "#EAE7E1", backgroundColor: "#FAF9F6", color: "#1A1C1A", borderRadius: 9, paddingHorizontal: 12, marginBottom: 10, fontSize: 13 },
+  addButtonModal: { minHeight: 46, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 7, backgroundColor: "#087F75", borderRadius: 9, marginTop: 3 },
+  addButtonModalText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  cancelModalButton: { minHeight: 42, alignItems: "center", justifyContent: "center", marginTop: 7 },
+  cancelModalButtonText: { color: "#596578", fontSize: 13, fontWeight: "600" },
+  modalContainerReprogramar: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(15,23,42,0.45)" },
+  modalContentReprogramar: { backgroundColor: "#FFFFFF", borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: Platform.OS === "ios" ? 30 : 20 },
+  modalTitleReprogramar: { color: "#1A1C1A", fontSize: 17, fontWeight: "700", marginBottom: 15 },
+  confirmButtonReprogramar: { minHeight: 46, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 8, backgroundColor: "#087F75", borderRadius: 9 },
+  confirmButtonTextReprogrmar: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  deleteButtonReprogramar: { minHeight: 44, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 8, borderWidth: 1, borderColor: "#E8D1CD", backgroundColor: "#FFF9F8", borderRadius: 9, marginTop: 9 },
+  deleteButtonTextEliminar: { color: "#A64238", fontSize: 13, fontWeight: "700" },
+  cancelButton: { minHeight: 43, justifyContent: "center", alignItems: "center", marginTop: 4 },
+  cancelButtonText: { color: "#596578", fontSize: 13, fontWeight: "600" },
+  photoSourceOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(15,23,42,0.48)" },
+  photoSourceBackdrop: { ...StyleSheet.absoluteFillObject },
+  photoSourceSheet: { backgroundColor: "#FFFFFF", borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 20, paddingTop: 10, paddingBottom: Platform.OS === "ios" ? 30 : 20, elevation: 12 },
+  photoSourceHandle: { width: 38, height: 4, borderRadius: 3, backgroundColor: "#D9DFDC", alignSelf: "center", marginBottom: 18 },
+  photoSourceHeading: { flexDirection: "row", alignItems: "center", marginBottom: 17, gap: 11 },
+  photoSourceHeadingIcon: { width: 43, height: 43, borderRadius: 14, backgroundColor: "#EAF5F2", alignItems: "center", justifyContent: "center" },
+  photoSourceHeadingCopy: { flex: 1 },
+  photoSourceTitle: { color: "#1A1C1A", fontSize: 16, fontWeight: "700" },
+  photoSourceSubtitle: { color: "#6D7A77", fontSize: 12, marginTop: 3 },
+  photoSourceClose: { width: 34, height: 34, borderRadius: 11, backgroundColor: "#F5F6F4", alignItems: "center", justifyContent: "center" },
+  photoSourceOption: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: "#EAEFED", borderRadius: 13, backgroundColor: "#FCFDFC", marginBottom: 9 },
+  photoSourceOptionIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: "#EAF5F2", alignItems: "center", justifyContent: "center" },
+  photoSourceOptionCopy: { flex: 1 },
+  photoSourceOptionTitle: { color: "#1A1C1A", fontSize: 14, fontWeight: "700" },
+  photoSourceOptionDescription: { color: "#6D7A77", fontSize: 11, marginTop: 3 },
+  photoSourceCancel: { minHeight: 45, alignItems: "center", justifyContent: "center", marginTop: 2 },
+  photoSourceCancelText: { color: "#596578", fontSize: 13, fontWeight: "700" },
+  imageModalContainer: { flex: 1, backgroundColor: "rgba(0,0,0,0.96)" },
+  modalHeader: { height: 55, flexDirection: "row", alignItems: "center", justifyContent: "center", paddingHorizontal: 16 },
+  imageModalTitle: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
+  modalCloseButton: { position: "absolute", left: 13, width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  modalImageContainer: { flex: 1, alignItems: "center", justifyContent: "center" },
+  modalImage: { width: Dimensions.get("window").width - 24, height: Dimensions.get("window").height * 0.76 },
+  navButton: { position: "absolute", top: "48%", width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", justifyContent: "center", zIndex: 1 },
+  prevButton: { left: 9 },
+  nextButton: { right: 9 },
+  alertOverlay: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20, backgroundColor: "rgba(15,23,42,0.46)" },
+  alertBox: { width: "90%", maxWidth: 420, backgroundColor: "#FFFFFF", borderRadius: 17, padding: 20, elevation: 8 },
+  alertTitle: { color: "#1A1C1A", fontSize: 17, fontWeight: "700", textAlign: "center", marginBottom: 9 },
+  alertMessage: { color: "#596578", fontSize: 13, lineHeight: 19, textAlign: "center", marginBottom: 16 },
+  alertButtons: { flexDirection: "row", justifyContent: "space-around", gap: 9 },
+  alertButton: { flex: 1, minHeight: 46, justifyContent: "center", alignItems: "center", borderRadius: 9, paddingHorizontal: 6, paddingVertical: 7 },
+  alertCancelButton: { backgroundColor: "#F8F7F4", borderWidth: 1, borderColor: "#EAE7E1" },
+  alertConfirmButton: { backgroundColor: "#087F75" },
+  alertDestructiveButton: { backgroundColor: "#A64238" },
+  alertCancelText: { color: "#596578", fontSize: 13, fontWeight: "600", textAlign: "center", lineHeight: 17, flexShrink: 1 },
+  alertConfirmText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700", textAlign: "center", lineHeight: 17, flexShrink: 1 },
 })
-
 export default WorkDetailScreen

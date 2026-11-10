@@ -1,17 +1,20 @@
 import { Ionicons } from "@expo/vector-icons"
-import AsyncStorage from "@react-native-async-storage/async-storage"
+import AsyncStorage from "../lib/backendStorage"
 import DateTimePicker from "@react-native-community/datetimepicker"
-import * as FileSystem from "expo-file-system"
+import * as FileSystem from "expo-file-system/legacy"
 import * as ImagePicker from "expo-image-picker"
 import * as Linking from "expo-linking"
-import { useFocusEffect, useRouter } from "expo-router"
-import { useCallback, useEffect, useState } from "react"
-import { Alert, FlatList, Image, KeyboardAvoidingView, Modal, Platform, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native"
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { Picker } from "@react-native-picker/picker"
+import { FlatList, Image, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native"
+import { SafeAreaView } from "react-native-safe-area-context"
 
 const NewWorkScreen = () => {
+  const { clienteId: clientIdParam } = useLocalSearchParams()
+  const clientId = Array.isArray(clientIdParam) ? clientIdParam[0] : clientIdParam
   // Estados para almacenar los datos del formulario y la UI
   const [clientes, setClientes] = useState([])
-  const [filteredClientes, setFilteredClientes] = useState([])
   const [searchText, setSearchText] = useState("")
   const [selectedClient, setSelectedClient] = useState(null)
   const [trabajo, setTrabajo] = useState("")
@@ -21,6 +24,8 @@ const NewWorkScreen = () => {
   const [fecha, setFecha] = useState(new Date())
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [showTimePicker, setShowTimePicker] = useState(false)
+  const [selectedHour, setSelectedHour] = useState(() => new Date().getHours())
+  const [selectedMinute, setSelectedMinute] = useState(0)
   const [isClientModalVisible, setClientModalVisible] = useState(false)
   const [tipoTrabajo, setTipoTrabajo] = useState(null)
   const [isWorkTypeModalVisible, setWorkTypeModalVisible] = useState(false)
@@ -30,6 +35,7 @@ const NewWorkScreen = () => {
   const [workTypes, setWorkTypes] = useState([])
   const [newWorkType, setNewWorkType] = useState("")
   const [editingWorkTypeIndex, setEditingWorkTypeIndex] = useState(null)
+  const [openWorkTypeMenuIndex, setOpenWorkTypeMenuIndex] = useState(null)
 
   // Estado para la alerta personalizada
   const [alertConfig, setAlertConfig] = useState({
@@ -63,13 +69,26 @@ const NewWorkScreen = () => {
   // Hook de navegación de expo-router
   const router = useRouter()
 
+  const openTimePicker = () => {
+    const roundedMinutes = Math.round((fecha.getHours() * 60 + fecha.getMinutes()) / 15) * 15 % (24 * 60)
+    setSelectedHour(Math.floor(roundedMinutes / 60))
+    setSelectedMinute(roundedMinutes % 60)
+    setShowTimePicker(true)
+  }
+
+  const confirmSelectedTime = () => {
+    const updatedDate = new Date(fecha)
+    updatedDate.setHours(selectedHour, selectedMinute, 0, 0)
+    setFecha(updatedDate)
+    setShowTimePicker(false)
+  }
+
   // Función para obtener los clientes de AsyncStorage
   const fetchClients = async () => {
     try {
       const clientesJSON = await AsyncStorage.getItem("clientes")
       const clientesArray = clientesJSON ? JSON.parse(clientesJSON) : []
       setClientes(clientesArray)
-      setFilteredClientes(clientesArray)
     } catch (error) {
       console.error("Error al cargar clientes:", error)
       showCustomAlert("Error", "No se pudieron cargar los clientes.")
@@ -96,30 +115,34 @@ const NewWorkScreen = () => {
     }, []),
   )
 
-  // useEffect para filtrar los clientes cuando el texto de búsqueda cambia
   useEffect(() => {
-    if (searchText === "") {
-      setFilteredClientes(clientes)
-    } else {
-      const filtered = clientes.filter(
-        (cliente) =>
-          cliente.nombre.toLowerCase().includes(searchText.toLowerCase()) ||
-          cliente.apellido.toLowerCase().includes(searchText.toLowerCase()),
-      )
-      setFilteredClientes(filtered)
+    if (clientId == null || !clientes.length) return
+    const client = clientes.find((item) => String(item.id) === String(clientId))
+    if (client) {
+      setSelectedClient(client)
+      setDomicilioTrabajo(client.domicilio || "")
     }
-  }, [searchText, clientes])
+  }, [clientId, clientes])
+
+  const filteredClientes = useMemo(() => {
+    const normalizedSearch = searchText.toLowerCase()
+    return clientes.filter((cliente) =>
+      cliente.nombre.toLowerCase().includes(normalizedSearch) ||
+      cliente.apellido.toLowerCase().includes(normalizedSearch),
+    )
+  }, [clientes, searchText])
 
   // Manejador para seleccionar un cliente de la lista modal
   const handleClientSelect = (cliente) => {
     setSelectedClient(cliente)
-    setDomicilioTrabajo(cliente.domicilio)
+    setDomicilioTrabajo(cliente.domicilio || "")
     setClientModalVisible(false)
   }
 
   // Manejador para seleccionar un tipo de trabajo
   const handleWorkTypeSelect = (type) => {
     setTipoTrabajo(type)
+    setOpenWorkTypeMenuIndex(null)
     setWorkTypeModalVisible(false)
   }
 
@@ -255,24 +278,28 @@ const NewWorkScreen = () => {
     setMateriales(newMateriales)
   }
 
+  const parseCurrencyInput = (value) => Number(String(value ?? "").replace(/\D/g, "")) || 0
+  const formatCurrencyInput = (value) => String(value ?? "").replace(/\D/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ".")
+
   // Calcular el total de materiales
   const calculateMaterialsTotal = () => {
     return materiales.reduce((total, material) => {
       const cantidad = Number.parseFloat(material.cantidad) || 0
-      const precio = Number.parseFloat(material.precio) || 0
+      const precio = parseCurrencyInput(material.precio)
       return total + cantidad * precio
     }, 0)
   }
 
   // formatCurrency: quita los decimales y agrega separador de miles con punto
   const formatCurrency = (amount) => {
-    return Math.round(Number(amount) || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    const numericAmount = typeof amount === "string" ? parseCurrencyInput(amount) : Number(amount) || 0
+    return Math.round(numericAmount).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")
   }
 
   // Calcular el total general
   const calculateTotal = () => {
     const materialsTotal = calculateMaterialsTotal()
-    const laborCost = Number.parseFloat(costoManoDeObra) || 0
+    const laborCost = parseCurrencyInput(costoManoDeObra)
     return materialsTotal + laborCost
   }
 
@@ -285,7 +312,9 @@ const NewWorkScreen = () => {
     }
 
     // Validar que al menos un material tenga datos
-    const validMaterials = materiales.filter((m) => m.descripcion.trim() !== "")
+    const validMaterials = materiales
+      .filter((m) => m.descripcion.trim() !== "")
+      .map((material) => ({ ...material, precio: String(parseCurrencyInput(material.precio)) }))
     if (validMaterials.length === 0) {
       showCustomAlert("Error", "Debe agregar al menos un material.")
       return
@@ -315,10 +344,13 @@ const NewWorkScreen = () => {
       }
 
       // Mover las fotos a un directorio persistente
+      const photosDirectory = `${FileSystem.documentDirectory}photos/`
+      await FileSystem.makeDirectoryAsync(photosDirectory, { intermediates: true })
       const persistentPhotos = await Promise.all(
-        photos.map(async (photo) => {
-          const fileName = photo.uri.split("/").pop()
-          const newUri = `${FileSystem.documentDirectory}photos/${fileName}`
+        photos.map(async (photo, index) => {
+          const extension = photo.uri.split(".").pop()?.split(/[?#]/)[0] || "jpg"
+          const fileName = `work_${Date.now()}_${index}.${extension}`
+          const newUri = `${photosDirectory}${fileName}`
           try {
             await FileSystem.copyAsync({
               from: photo.uri,
@@ -343,7 +375,7 @@ const NewWorkScreen = () => {
         trabajo: trabajo,
         materiales: validMaterials,
         costoMateriales: calculateMaterialsTotal(),
-        costoManoDeObra: Number.parseFloat(costoManoDeObra) || 0,
+        costoManoDeObra: parseCurrencyInput(costoManoDeObra),
         total: calculateTotal(),
         fecha: fecha.toISOString(),
         photos: persistentPhotos.filter((uri) => uri !== null),
@@ -391,7 +423,7 @@ const NewWorkScreen = () => {
             const materialesTexto = newWork.materiales
               .map(
                 (m) =>
-                  `• ${m.descripcion} - Cant: ${m.cantidad} - $${formatCurrency(Number.parseFloat(m.cantidad) * Number.parseFloat(m.precio))}`,
+                  `• ${m.descripcion} - Cant: ${m.cantidad} - $${formatCurrency(Number.parseFloat(m.cantidad) * parseCurrencyInput(m.precio))}`,
               )
               .join("\n")
 
@@ -442,217 +474,246 @@ const NewWorkScreen = () => {
   const renderMaterialItem = ({ item, index }) => (
     <View style={styles.materialContainer}>
       <View style={styles.materialHeader}>
-        <Text style={styles.materialTitle}>Material {index + 1}</Text>
+        <Text style={styles.materialTitle}>Ítem #{index + 1}</Text>
         {materiales.length > 1 && (
           <TouchableOpacity onPress={() => removeMaterial(index)} style={styles.removeMaterialButton}>
-            <Ionicons name="trash-outline" size={20} color="#C42A2A" />
+            <Ionicons name="trash-outline" size={18} color={FORM_COLORS.danger} />
           </TouchableOpacity>
         )}
       </View>
 
       <TextInput
-        style={styles.input}
+        style={[styles.input, styles.materialDescriptionInput]}
         value={item.descripcion}
         onChangeText={(value) => updateMaterial(index, "descripcion", value)}
         placeholder="Descripción del material"
-        placeholderTextColor="#999"
+        placeholderTextColor={FORM_COLORS.placeholder}
       />
 
       <View style={styles.materialRow}>
-        <TextInput
-          style={[styles.input, styles.materialInput]}
-          value={item.cantidad}
-          onChangeText={(value) => updateMaterial(index, "cantidad", value)}
-          placeholder="Cantidad"
-          placeholderTextColor="#999"
-          keyboardType="numeric"
-        />
-        <TextInput
-          style={[styles.input, styles.materialInput]}
-          value={item.precio}
-          onChangeText={(value) => updateMaterial(index, "precio", value)}
-          placeholder="Precio c/u"
-          placeholderTextColor="#999"
-          keyboardType="numeric"
-        />
+        <View style={styles.materialField}>
+          <Text style={styles.fieldLabel}>Cantidad</Text>
+          <TextInput
+            style={[styles.input, styles.materialInput]}
+            value={item.cantidad}
+            onChangeText={(value) => updateMaterial(index, "cantidad", value)}
+            placeholder="0"
+            placeholderTextColor={FORM_COLORS.placeholder}
+            keyboardType="numeric"
+          />
+        </View>
+        <View style={styles.materialField}>
+          <Text style={styles.fieldLabel}>Precio unitario</Text>
+          <View style={[styles.currencyField, styles.materialInput]}>
+            <Text style={styles.currencySymbol}>$</Text>
+            <TextInput
+              style={styles.currencyFieldInput}
+              value={item.precio}
+              onChangeText={(value) => updateMaterial(index, "precio", formatCurrencyInput(value))}
+              placeholder="0"
+              placeholderTextColor={FORM_COLORS.placeholder}
+              keyboardType="numeric"
+            />
+          </View>
+        </View>
       </View>
 
       {item.cantidad && item.precio && (
-        <Text style={styles.subtotalText}>
-          Subtotal: ${formatCurrency(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio))}
-        </Text>
+        <View style={styles.subtotalRow}>
+          <Text style={styles.subtotalLabel}>Subtotal ítem</Text>
+          <Text style={styles.subtotalText}>${formatCurrency(Number.parseFloat(item.cantidad) * parseCurrencyInput(item.precio))}</Text>
+        </View>
       )}
     </View>
   )
 
+  const materialCount = materiales.filter((item) => item.descripcion.trim()).length
+
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top", "left", "right", "bottom"]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace("/")} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={28} color="#FFF" />
+        <TouchableOpacity onPress={() => router.replace("/")} style={styles.backButton} accessibilityRole="button" accessibilityLabel="Volver al inicio">
+          <Ionicons name="arrow-back" size={22} color={FORM_COLORS.ink} />
         </TouchableOpacity>
-        <Text style={styles.title}>Nuevo Trabajo</Text>
+        <Text style={styles.title}>Nuevo trabajo</Text>
+        <View style={styles.stepBadge}><Text style={styles.stepBadgeText}>1 de 3</Text></View>
+      </View>
+
+      <View style={styles.formIntro}>
+        <Text style={styles.introText}>Organizá los detalles del trabajo</Text>
+        <View style={styles.progressTrack}><View style={styles.progressFill} /></View>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.formContainer}>
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.label}>Cliente</Text>
-          <TouchableOpacity style={styles.selectButton} onPress={() => setClientModalVisible(true)}>
-            <Text style={styles.selectButtonText}>
-              {selectedClient
-                ? `${selectedClient.nombre || ""} ${selectedClient.apellido || ""}`
-                : "Seleccionar cliente"}
-            </Text>
-            <Ionicons name="chevron-down" size={20} color="#2F4550" />
-          </TouchableOpacity>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <View style={styles.formContent}>
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="person-outline" size={19} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.sectionTitle}>Cliente</Text>
+                <TouchableOpacity style={styles.addClientAction} onPress={() => router.push("NewClientScreen")}>
+                  <Ionicons name="add" size={17} color={FORM_COLORS.primary} />
+                  <Text style={styles.addClientText}>Nuevo cliente</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.fieldLabel}>Nombre o Razón Social</Text>
+              <TouchableOpacity style={styles.selectButton} onPress={() => setClientModalVisible(true)}>
+                <Ionicons name="person-outline" size={18} color={FORM_COLORS.secondary} />
+                <Text style={[styles.selectButtonText, !selectedClient && styles.placeholderText]} numberOfLines={1}>
+                  {selectedClient ? `${selectedClient.nombre || ""} ${selectedClient.apellido || ""}`.trim() : "Seleccionar cliente"}
+                </Text>
+                <Ionicons name="chevron-down" size={18} color={FORM_COLORS.secondary} />
+              </TouchableOpacity>
+              {selectedClient && (
+                <View style={styles.selectedClientFields}>
+                  <Text style={styles.fieldLabel}>Domicilio del trabajo</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={domicilioTrabajo || ""}
+                    onChangeText={setDomicilioTrabajo}
+                    placeholder="Calle y número, localidad"
+                    placeholderTextColor={FORM_COLORS.placeholder}
+                  />
+                  <Text style={styles.fieldLabel}>Teléfono de contacto</Text>
+                  <View style={[styles.input, styles.readOnlyField]}>
+                    <Ionicons name="call-outline" size={17} color={FORM_COLORS.secondary} />
+                    <Text style={styles.readOnlyText}>{selectedClient.telefono || "Sin teléfono"}</Text>
+                  </View>
+                </View>
+              )}
+            </View>
 
-          {/* Mostrar domicilio y teléfono solo si se ha seleccionado un cliente */}
-          {selectedClient && (
-            <View>
-              <Text style={styles.label}>Domicilio</Text>
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="calendar-outline" size={19} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.sectionTitle}>Programación</Text>
+              </View>
+              <View style={styles.dateFieldsRow}>
+                <View style={styles.dateFieldGroup}>
+                  <Text style={styles.fieldLabel}>Fecha pactada</Text>
+                  <TouchableOpacity style={styles.dateField} onPress={() => setShowDatePicker(true)}>
+                    <Ionicons name="calendar-outline" size={17} color={FORM_COLORS.secondary} />
+                    <Text style={styles.dateFieldText}>{fecha ? fecha.toLocaleDateString("es-AR") : "Elegir fecha"}</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.dateFieldGroup}>
+                  <Text style={styles.fieldLabel}>Hora estimada</Text>
+                  <TouchableOpacity style={styles.dateField} onPress={openTimePicker}>
+                    <Ionicons name="time-outline" size={17} color={FORM_COLORS.secondary} />
+                    <Text style={styles.dateFieldText}>{fecha ? fecha.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) : "Elegir hora"}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              {showDatePicker && (
+                <DateTimePicker value={fecha} mode="date" display={Platform.OS === "ios" ? "spinner" : "default"} onChange={(event, selectedDate) => {
+                  setShowDatePicker(false)
+                  if (selectedDate) setFecha(selectedDate)
+                }} />
+              )}
+            </View>
+
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="construct-outline" size={19} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.sectionTitle}>Trabajo</Text>
+              </View>
+              <Text style={styles.fieldLabel}>Tipo de trabajo</Text>
+              <TouchableOpacity style={styles.selectButton} onPress={() => setWorkTypeModalVisible(true)}>
+                <Text style={[styles.selectButtonText, !tipoTrabajo && styles.placeholderText]} numberOfLines={1}>{tipoTrabajo || "Seleccionar tipo de trabajo"}</Text>
+                <Ionicons name="chevron-down" size={18} color={FORM_COLORS.secondary} />
+              </TouchableOpacity>
+              <Text style={styles.fieldLabel}>Descripción del trabajo</Text>
               <TextInput
-                style={styles.input}
-                value={domicilioTrabajo || ""}
-                onChangeText={setDomicilioTrabajo}
-                placeholder="Escribe el domicilio del trabajo"
-                placeholderTextColor="#999"
-              />
-              <Text style={styles.label}>Teléfono</Text>
-              <TextInput
-                style={styles.input}
-                value={selectedClient?.telefono || ""}
-                editable={false}
-                placeholderTextColor="#999"
+                style={[styles.input, styles.textArea]}
+                value={trabajo || ""}
+                onChangeText={setTrabajo}
+                placeholder="Detalle de tareas a realizar, medidas preliminares o especificaciones técnicas..."
+                placeholderTextColor={FORM_COLORS.placeholder}
+                multiline
+                textAlignVertical="top"
               />
             </View>
-          )}
 
-          <Text style={styles.label}>Fecha y Hora</Text>
-          <View style={styles.dateTimeContainer}>
-            <TouchableOpacity style={styles.selectDateTimeButton} onPress={() => setShowDatePicker(true)}>
-              <Text style={styles.selectButtonText}>{fecha ? fecha.toLocaleDateString() : "Seleccionar fecha"}</Text>
-              <Ionicons name="calendar" size={20} color="#2F4550" />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.selectDateTimeButton} onPress={() => setShowTimePicker(true)}>
-              <Text style={styles.selectButtonText}>
-                {fecha ? fecha.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Seleccionar hora"}
-              </Text>
-              <Ionicons name="time" size={20} color="#2F4550" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Selector de tipo de trabajo */}
-          <Text style={styles.label}>Tipo de Trabajo</Text>
-          <TouchableOpacity style={styles.selectButton} onPress={() => setWorkTypeModalVisible(true)}>
-            <Text style={styles.selectButtonText}>{tipoTrabajo || "Seleccionar tipo de trabajo"}</Text>
-            <Ionicons name="chevron-down" size={20} color="#2F4550" />
-          </TouchableOpacity>
-
-          {/* DateTimePicker para la fecha */}
-          {showDatePicker && (
-            <DateTimePicker
-              value={fecha}
-              mode="date"
-              display={Platform.OS === "ios" ? "spinner" : "default"}
-              onChange={(event, selectedDate) => {
-                setShowDatePicker(false)
-                if (selectedDate) setFecha(selectedDate)
-              }}
-            />
-          )}
-
-          {/* DateTimePicker para la hora */}
-          {showTimePicker && (
-            <DateTimePicker
-              value={fecha}
-              mode="time"
-              display={Platform.OS === "ios" ? "spinner" : "default"}
-              onChange={(event, selectedTime) => {
-                setShowTimePicker(false)
-                if (selectedTime) setFecha(selectedTime)
-              }}
-            />
-          )}
-
-          <Text style={styles.label}>Descripción del trabajo</Text>
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            value={trabajo || ""}
-            onChangeText={setTrabajo}
-            placeholder="Escribe aquí los detalles del trabajo"
-            placeholderTextColor="#999"
-            multiline
-          />
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Materiales</Text>
-            <TouchableOpacity onPress={addMaterial} style={styles.addButton}>
-              <Ionicons name="add-circle" size={28} color="#2F4550" />
-            </TouchableOpacity>
-          </View>
-
-          <FlatList
-            data={materiales}
-            renderItem={renderMaterialItem}
-            keyExtractor={(item, index) => index.toString()}
-            scrollEnabled={false}
-          />
-
-          <Text style={styles.label}>Costo de Mano de Obra</Text>
-          <TextInput
-            style={styles.input}
-            value={costoManoDeObra || ""}
-            onChangeText={setCostoManoDeObra}
-            placeholder="Costo de la mano de obra"
-            placeholderTextColor="#999"
-            keyboardType="numeric"
-          />
-
-          {/* Resumen de totales */}
-          <View style={styles.totalContainer}>
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Materiales:</Text>
-              <Text style={styles.totalValue}>${formatCurrency(calculateMaterialsTotal())}</Text>
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="file-tray-stacked-outline" size={19} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.sectionTitle}>Materiales</Text>
+                <View style={styles.countBadge}><Text style={styles.countBadgeText}>{materialCount} {materialCount === 1 ? "ítem" : "ítems"}</Text></View>
+              </View>
+              <FlatList data={materiales} renderItem={renderMaterialItem} keyExtractor={(item, index) => index.toString()} scrollEnabled={false} />
+              <TouchableOpacity onPress={addMaterial} style={styles.addMaterialAction}>
+                <Ionicons name="add-circle-outline" size={19} color={FORM_COLORS.primary} />
+                <Text style={styles.addMaterialText}>Agregar material</Text>
+              </TouchableOpacity>
             </View>
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Mano de Obra:</Text>
-              <Text style={styles.totalValue}>${formatCurrency(costoManoDeObra)}</Text>
+
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="wallet-outline" size={19} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.sectionTitle}>Costos</Text>
+              </View>
+              <Text style={styles.fieldLabel}>Mano de obra estimada</Text>
+              <View style={styles.currencyInputWrap}>
+                <Text style={styles.currencySymbol}>$</Text>
+                <TextInput
+                  style={styles.currencyInput}
+                  value={costoManoDeObra || ""}
+                  onChangeText={(value) => setCostoManoDeObra(formatCurrencyInput(value))}
+                  placeholder="0"
+                  placeholderTextColor={FORM_COLORS.placeholder}
+                  keyboardType="numeric"
+                />
+                <Text style={styles.currencyCode}>ARS</Text>
+              </View>
+              <View style={styles.totalContainer}>
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>Materiales ({materialCount} ítems)</Text>
+                  <Text style={styles.totalValue}>${formatCurrency(calculateMaterialsTotal())}</Text>
+                </View>
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>Mano de obra estimada</Text>
+                  <Text style={styles.totalValue}>${formatCurrency(costoManoDeObra)}</Text>
+                </View>
+                <View style={[styles.totalRow, styles.finalTotal]}>
+                  <View>
+                    <Text style={styles.finalTotalLabel}>TOTAL ESTIMADO</Text>
+                  </View>
+                  <Text style={styles.finalTotalValue}>${formatCurrency(calculateTotal())}</Text>
+                </View>
+              </View>
             </View>
-            <View style={[styles.totalRow, styles.finalTotal]}>
-              <Text style={styles.finalTotalLabel}>TOTAL:</Text>
-              <Text style={styles.finalTotalValue}>${formatCurrency(calculateTotal())}</Text>
+
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="camera-outline" size={19} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.sectionTitle}>Fotos del trabajo</Text>
+                <View style={styles.optionalBadge}><Text style={styles.optionalBadgeText}>Opcional</Text></View>
+              </View>
+              <TouchableOpacity style={styles.photoDropZone} onPress={handlePickImage} activeOpacity={0.8}>
+                <View style={styles.photoDropIcon}><Ionicons name="camera" size={24} color={FORM_COLORS.primary} /></View>
+                <Text style={styles.photoDropTitle}>Tocá para subir fotos del sitio o planos</Text>
+                <Text style={styles.photoDropSubtitle}>PNG o JPG</Text>
+              </TouchableOpacity>
+              {photos.length > 0 && (
+                <FlatList data={photos} renderItem={renderPhotoItem} keyExtractor={(item, index) => index.toString()} horizontal showsHorizontalScrollIndicator={false} style={styles.photoList} />
+              )}
             </View>
           </View>
-
-          {/* Sección de fotos */}
-          <Text style={styles.label}>Fotos</Text>
-          <TouchableOpacity style={styles.imageButton} onPress={handlePickImage}>
-            <Ionicons name="image" size={24} color="#fff" />
-            <Text style={styles.imageButtonText}>Agregar Fotos</Text>
-          </TouchableOpacity>
-
-          {photos.length > 0 && (
-            <FlatList
-              data={photos}
-              renderItem={renderPhotoItem}
-              keyExtractor={(item, index) => index.toString()}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.photoList}
-            />
-          )}
-
-          <TouchableOpacity style={styles.saveButton} onPress={handleSaveWork}>
-            <Text style={styles.saveButtonText}>Guardar Trabajo</Text>
-          </TouchableOpacity>
         </ScrollView>
+        <View style={styles.bottomActionBar}>
+          <TouchableOpacity style={styles.saveButton} onPress={handleSaveWork} activeOpacity={0.85}>
+            <Ionicons name="checkmark-circle-outline" size={20} color="#FFFFFF" />
+            <Text style={styles.saveButtonText}>Guardar trabajo</Text>
+          </TouchableOpacity>
+        </View>
       </KeyboardAvoidingView>
 
       {/* Modal para seleccionar clientes */}
       <Modal
         animationType="slide"
         transparent={true}
+        statusBarTranslucent
+        navigationBarTranslucent
         visible={isClientModalVisible}
         onRequestClose={() => setClientModalVisible(false)}
       >
@@ -686,6 +747,8 @@ const NewWorkScreen = () => {
               data={filteredClientes}
               keyExtractor={(item) => item.id}
               renderItem={renderClientItem}
+              style={styles.clientList}
+              keyboardShouldPersistTaps="handled"
               ListEmptyComponent={() => <Text style={styles.emptyListText}>No se encontraron clientes.</Text>}
             />
 
@@ -700,12 +763,14 @@ const NewWorkScreen = () => {
       <Modal
         animationType="slide"
         transparent={true}
+        statusBarTranslucent
+        navigationBarTranslucent
         visible={isWorkTypeModalVisible}
         onRequestClose={() => setWorkTypeModalVisible(false)}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Tipo de Trabajo</Text>
+            <Text style={[styles.modalTitle, styles.workTypeModalTitle]}>Tipo de Trabajo</Text>
 
             <View style={styles.addTypeContainer}>
               <TextInput
@@ -725,18 +790,34 @@ const NewWorkScreen = () => {
               data={workTypes}
               keyExtractor={(item, index) => index.toString()}
               renderItem={({ item, index }) => (
-                <View style={styles.workTypeRow}>
-                  <TouchableOpacity style={styles.modalItemTouchable} onPress={() => handleWorkTypeSelect(item)}>
-                    <Text style={styles.modalItemText}>{item || ""}</Text>
-                  </TouchableOpacity>
-                  <View style={styles.workTypeActions}>
-                    <TouchableOpacity onPress={() => startEditingWorkType(index)} style={styles.actionButton}>
-                      <Ionicons name="pencil" size={20} color="#2196F3" />
+                <View style={styles.workTypeItem}>
+                  <View style={styles.workTypeRow}>
+                    <TouchableOpacity style={styles.modalItemTouchable} onPress={() => handleWorkTypeSelect(item)}>
+                      <Text style={styles.modalItemText}>{item || ""}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => handleDeleteWorkType(index)} style={styles.actionButton}>
-                      <Ionicons name="trash" size={20} color="#F44336" />
+                    <TouchableOpacity
+                      onPress={() => setOpenWorkTypeMenuIndex((current) => current === index ? null : index)}
+                      style={styles.actionButton}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Opciones para ${item}`}
+                      accessibilityState={{ expanded: openWorkTypeMenuIndex === index }}
+                    >
+                      <Ionicons name="ellipsis-vertical" size={20} color={FORM_COLORS.secondary} />
                     </TouchableOpacity>
                   </View>
+                  {openWorkTypeMenuIndex === index && (
+                    <View style={styles.workTypeDropdown}>
+                      <TouchableOpacity style={styles.workTypeDropdownOption} onPress={() => { setOpenWorkTypeMenuIndex(null); startEditingWorkType(index) }}>
+                        <Ionicons name="pencil-outline" size={17} color={FORM_COLORS.primary} />
+                        <Text style={styles.workTypeDropdownText}>Editar</Text>
+                      </TouchableOpacity>
+                      <View style={styles.workTypeDropdownDivider} />
+                      <TouchableOpacity style={styles.workTypeDropdownOption} onPress={() => { setOpenWorkTypeMenuIndex(null); handleDeleteWorkType(index) }}>
+                        <Ionicons name="trash-outline" size={17} color={FORM_COLORS.danger} />
+                        <Text style={[styles.workTypeDropdownText, styles.workTypeDeleteText]}>Eliminar</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
               style={styles.workTypesList}
@@ -746,6 +827,48 @@ const NewWorkScreen = () => {
             <TouchableOpacity onPress={() => setWorkTypeModalVisible(false)} style={styles.closeModalButton}>
               <Text style={styles.closeModalButtonText}>Cerrar</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        navigationBarTranslucent
+        visible={showTimePicker}
+        onRequestClose={() => setShowTimePicker(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.timePickerModalContent}>
+            <View style={styles.timePickerHeading}>
+              <Text style={styles.modalTitle}>Elegir hora</Text>
+              <TouchableOpacity onPress={() => setShowTimePicker(false)} accessibilityLabel="Cerrar selector de hora">
+                <Ionicons name="close" size={22} color={FORM_COLORS.secondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.timeSelectRow}>
+              <View style={styles.timeSelectColumn}>
+                <Text style={styles.timeSelectLabel}>Hora</Text>
+                <View style={styles.timePickerSelect}>
+                  <Picker selectedValue={selectedHour} onValueChange={(value) => setSelectedHour(Number(value))} mode="dialog" style={styles.nativeTimePicker} dropdownIconColor={FORM_COLORS.secondary}>
+                    {Array.from({ length: 24 }, (_, hour) => <Picker.Item key={hour} label={String(hour).padStart(2, "0")} value={hour} />)}
+                  </Picker>
+                </View>
+              </View>
+              <View style={styles.timeSelectColumn}>
+                <Text style={styles.timeSelectLabel}>Minutos</Text>
+                <View style={styles.timePickerSelect}>
+                  <Picker selectedValue={selectedMinute} onValueChange={(value) => setSelectedMinute(Number(value))} mode="dialog" style={styles.nativeTimePicker} dropdownIconColor={FORM_COLORS.secondary}>
+                    {[0, 15, 30, 45].map((minute) => <Picker.Item key={minute} label={String(minute).padStart(2, "0")} value={minute} />)}
+                  </Picker>
+                </View>
+              </View>
+            </View>
+            <View style={styles.timePickerActions}>
+              <TouchableOpacity style={styles.timeCancelButton} onPress={() => setShowTimePicker(false)}><Text style={styles.timeCancelText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.timeConfirmButton} onPress={confirmSelectedTime}><Text style={styles.timeConfirmText}>Confirmar</Text></TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -788,462 +911,205 @@ const NewWorkScreen = () => {
   )
 }
 
+const FORM_COLORS = {
+  background: "#FAF9F6",
+  surface: "#FFFFFF",
+  ink: "#182320",
+  secondary: "#697976",
+  placeholder: "#A3AEAA",
+  border: "#E3E9E6",
+  primary: "#0D9488",
+  primaryDark: "#006A61",
+  pale: "#F5F7F4",
+  mint: "#E2F6F2",
+  amber: "#A86407",
+  danger: "#C1473D",
+}
+
 // Estilos del componente
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F8F9FA",
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 30,
-  },
+  container: { flex: 1, backgroundColor: FORM_COLORS.background },
   header: {
+    minHeight: 54,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#2F4550",
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    paddingBottom: 40,
-    paddingTop: 50,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 8,
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    backgroundColor: FORM_COLORS.background,
   },
-  backButton: {
-    padding: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    marginRight: 15,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#FFF",
-    flex: 1,
-    textAlign: "center",
-    marginRight: 40, // Compensar el botón de retroceso
-  },
-  formContainer: {
-    flex: 1,
-    backgroundColor: "#FFF",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 25,
-    marginTop: -20,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-    marginBottom: 8,
-    marginTop: 5,
-  },
-  input: {
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    marginBottom: 20,
-    color: "#2F4550",
+  backButton: { width: 38, height: 38, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  title: { color: FORM_COLORS.ink, fontSize: 17, fontWeight: "700", flex: 1, textAlign: "center" },
+  stepBadge: { minWidth: 48, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 14, backgroundColor: FORM_COLORS.mint, alignItems: "center" },
+  stepBadgeText: { color: FORM_COLORS.primaryDark, fontSize: 11, fontWeight: "700" },
+  formIntro: { paddingHorizontal: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: FORM_COLORS.border },
+  introText: { color: FORM_COLORS.secondary, fontSize: 13, marginBottom: 11 },
+  progressTrack: { height: 5, borderRadius: 3, backgroundColor: "#E8ECE9", overflow: "hidden" },
+  progressFill: { width: "34%", height: "100%", borderRadius: 3, backgroundColor: FORM_COLORS.primary },
+  formContainer: { flex: 1 },
+  scrollContent: { paddingBottom: 18 },
+  formContent: { padding: 16, gap: 12 },
+  sectionCard: {
+    padding: 14,
+    backgroundColor: FORM_COLORS.surface,
+    borderRadius: 17,
     borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  textArea: {
-    height: 100,
-    textAlignVertical: "top",
-  },
-  selectButton: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  selectButtonText: {
-    fontSize: 16,
-    color: "#2F4550",
-  },
-  dateTimeContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 20,
-  },
-  selectDateTimeButton: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 16,
-    width: "48%",
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  saveButton: {
-    backgroundColor: "#2F4550",
-    padding: 18,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  saveButtonText: {
-    color: "#FFF",
-    fontSize: 18,
-    fontWeight: "600",
-  },
-  modalContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.5)",
-  },
-  modalContent: {
-    backgroundColor: "#FFF",
-    borderRadius: 20,
-    padding: 25,
-    width: "85%",
-    maxHeight: "70%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 15,
-  },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#2F4550",
-    textAlign: "center",
-  },
-  addNewClientButton: {
-    padding: 5,
-  },
-  searchContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  searchIcon: {
-    marginRight: 10,
-  },
-  searchInput: {
-    flex: 1,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: "#2F4550",
-  },
-  modalItem: {
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E1E5EA",
-  },
-  workTypeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E1E5EA",
-    paddingVertical: 10,
-  },
-  modalItemTouchable: {
-    flex: 1,
-    paddingVertical: 5,
-  },
-  workTypeActions: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  actionButton: {
-    padding: 8,
-    marginLeft: 10,
-    backgroundColor: "#F5F7FA",
-    borderRadius: 8,
-  },
-  modalItemText: {
-    fontSize: 16,
-    color: "#2F4550",
-  },
-  closeModalButton: {
-    backgroundColor: "#2F4550",
-    padding: 15,
-    borderRadius: 12,
-    marginTop: 20,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  closeModalButtonText: {
-    color: "#FFF",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  emptyListText: {
-    textAlign: "center",
-    marginTop: 20,
-    fontSize: 16,
-    color: "#999",
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 15,
-    marginTop: 10,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  addButton: {
-    padding: 5,
-  },
-  materialContainer: {
-    backgroundColor: "#F8F9FA",
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  materialHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  materialTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-  },
-  removeMaterialButton: {
-    padding: 5,
-  },
-  materialRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  materialInput: {
-    width: "48%",
-    marginBottom: 10,
-  },
-  subtotalText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#2F4550",
-    textAlign: "right",
-    marginTop: -10,
-  },
-  totalContainer: {
-    backgroundColor: "#F8F9FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 2,
-    borderColor: "#E1E5EA",
-  },
-  totalRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  totalLabel: {
-    fontSize: 16,
-    color: "#2F4550",
-  },
-  totalValue: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-  },
-  finalTotal: {
-    borderTopWidth: 2,
-    borderTopColor: "#2F4550",
-    paddingTop: 10,
-    marginTop: 10,
-  },
-  finalTotalLabel: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  finalTotalValue: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  imageButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#2F4550",
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    marginBottom: 15,
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  imageButtonText: {
-    color: "#FFF",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  photoList: {
-    marginBottom: 20,
-  },
-  photoPreviewContainer: {
-    marginRight: 10,
-    position: "relative",
-  },
-  photoPreview: {
-    width: 100,
-    height: 100,
-    borderRadius: 8,
-  },
-  removePhotoButton: {
-    position: "absolute",
-    top: -5,
-    right: -5,
-    backgroundColor: "#FFF",
-    borderRadius: 12,
-    shadowColor: "#000",
+    borderColor: FORM_COLORS.border,
+    shadowColor: "#17201F",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    elevation: 3,
+    shadowOpacity: 0.035,
+    shadowRadius: 4,
+    elevation: 1,
   },
-  subModalTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-    marginTop: 15,
-    marginBottom: 5,
-  },
-  addTypeContainer: {
-    flexDirection: "row",
-    alignItems: "center",
+  sectionHeading: { flexDirection: "row", alignItems: "center", marginBottom: 13, gap: 9 },
+  sectionIcon: { width: 34, height: 34, borderRadius: 11, backgroundColor: FORM_COLORS.mint, alignItems: "center", justifyContent: "center" },
+  sectionTitle: { color: FORM_COLORS.ink, fontSize: 16, fontWeight: "700", flex: 1 },
+  addClientAction: { flexDirection: "row", alignItems: "center", gap: 2, paddingVertical: 6, paddingLeft: 5 },
+  addClientText: { color: FORM_COLORS.primaryDark, fontSize: 11, fontWeight: "700" },
+  fieldLabel: { color: FORM_COLORS.secondary, fontSize: 11, fontWeight: "600", marginBottom: 6 },
+  label: { color: FORM_COLORS.secondary, fontSize: 11, fontWeight: "600", marginBottom: 6, marginTop: 4 },
+  input: {
+    minHeight: 46,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    backgroundColor: "#FCFCFA",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: FORM_COLORS.border,
+    color: FORM_COLORS.ink,
+    fontSize: 14,
     marginBottom: 10,
   },
-  addTypeInput: {
-    flex: 1,
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    color: "#2F4550",
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-    marginRight: 10,
-  },
-  addTypeButton: {
-    backgroundColor: "#2196F3",
-    padding: 12,
-    borderRadius: 12,
-    justifyContent: "center",
+  selectedClientFields: { marginTop: 11 },
+  readOnlyField: { flexDirection: "row", alignItems: "center", gap: 9 },
+  readOnlyText: { color: FORM_COLORS.secondary, fontSize: 14 },
+  textArea: { minHeight: 92, textAlignVertical: "top", lineHeight: 20 },
+  selectButton: {
+    minHeight: 47,
+    flexDirection: "row",
     alignItems: "center",
+    gap: 9,
+    backgroundColor: "#FCFCFA",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: FORM_COLORS.border,
   },
-  workTypesList: {
-    maxHeight: 200,
+  selectButtonText: { flex: 1, fontSize: 14, color: FORM_COLORS.ink },
+  placeholderText: { color: FORM_COLORS.placeholder },
+  dateFieldsRow: { flexDirection: "row", gap: 10 },
+  dateFieldGroup: { flex: 1 },
+  dateField: {
+    minHeight: 46,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 10,
+    backgroundColor: "#FCFCFA",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: FORM_COLORS.border,
   },
-  // Custom Alert Styles
-  alertOverlay: {
-      flex: 1,
-      backgroundColor: "rgba(0, 0, 0, 0.5)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 20,
-  },
-  alertBox: {
-      backgroundColor: "#FFF",
-      borderRadius: 15,
-      padding: 20,
-      width: "90%",
-      maxWidth: 400,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 10,
-      elevation: 5,
-  },
-  alertTitle: {
-      fontSize: 18,
-      fontWeight: "bold",
-      color: "#2F4550",
-      marginBottom: 10,
-      textAlign: "center",
-  },
-  alertMessage: {
-      fontSize: 15,
-      color: "#555",
-      marginBottom: 20,
-      textAlign: "center",
-      lineHeight: 22,
-  },
-  alertButtons: {
-      flexDirection: "row",
-      justifyContent: "space-around",
-      gap: 10,
-  },
-  alertButton: {
-      flex: 1,
-      paddingVertical: 12,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-  },
-  alertCancelButton: {
-      backgroundColor: "#F5F7FA",
-      borderWidth: 1,
-      borderColor: "#E1E5EA",
-  },
-  alertConfirmButton: {
-      backgroundColor: "#2196F3",
-  },
-  alertDestructiveButton: {
-      backgroundColor: "#F44336",
-  },
-  alertCancelText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#555",
-  },
-  alertConfirmText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#FFF",
-  },
+  dateFieldText: { color: FORM_COLORS.ink, fontSize: 13, flexShrink: 1 },
+  dateTimeContainer: { flexDirection: "row", justifyContent: "space-between", marginBottom: 10 },
+  selectDateTimeButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: FORM_COLORS.pale, borderRadius: 10, padding: 12, width: "48%", borderWidth: 1, borderColor: FORM_COLORS.border },
+  countBadge: { backgroundColor: FORM_COLORS.pale, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 9 },
+  countBadgeText: { color: FORM_COLORS.secondary, fontSize: 10, fontWeight: "700" },
+  materialContainer: { backgroundColor: FORM_COLORS.pale, borderRadius: 13, padding: 11, marginBottom: 9, borderWidth: 1, borderColor: FORM_COLORS.border },
+  materialHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 9 },
+  materialTitle: { fontSize: 11, fontWeight: "700", color: FORM_COLORS.secondary, textTransform: "uppercase", letterSpacing: 0.4 },
+  removeMaterialButton: { padding: 4 },
+  materialDescriptionInput: { backgroundColor: FORM_COLORS.surface, minHeight: 42, marginBottom: 10 },
+  materialRow: { flexDirection: "row", gap: 9 },
+  materialField: { flex: 1 },
+  materialInput: { flex: 1, marginBottom: 5 },
+  currencyField: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, backgroundColor: FORM_COLORS.surface, borderRadius: 10, borderWidth: 1, borderColor: FORM_COLORS.border },
+  currencyFieldInput: { flex: 1, minWidth: 0, paddingVertical: 9, color: FORM_COLORS.ink, fontSize: 13 },
+  subtotalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 5 },
+  subtotalLabel: { color: FORM_COLORS.secondary, fontSize: 11, fontWeight: "600" },
+  subtotalText: { color: FORM_COLORS.primaryDark, backgroundColor: FORM_COLORS.mint, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, fontSize: 11, fontWeight: "700" },
+  addMaterialAction: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: 11, borderWidth: 1, borderStyle: "dashed", borderColor: "#9CCFC8", backgroundColor: "#F5FAF8" },
+  addMaterialText: { color: FORM_COLORS.primaryDark, fontSize: 12, fontWeight: "700" },
+  currencyInputWrap: { minHeight: 47, flexDirection: "row", alignItems: "center", paddingHorizontal: 12, borderWidth: 1, borderColor: FORM_COLORS.border, backgroundColor: "#FCFCFA", borderRadius: 10, marginBottom: 12 },
+  currencySymbol: { color: FORM_COLORS.secondary, fontSize: 15, fontWeight: "600", marginRight: 7 },
+  currencyInput: { flex: 1, paddingVertical: 10, color: FORM_COLORS.ink, fontSize: 14 },
+  currencyCode: { color: FORM_COLORS.secondary, fontSize: 10, fontWeight: "700" },
+  totalContainer: { backgroundColor: FORM_COLORS.pale, borderRadius: 13, padding: 12, marginBottom: 0, borderWidth: 1, borderColor: FORM_COLORS.border },
+  totalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  totalLabel: { fontSize: 12, color: FORM_COLORS.secondary },
+  totalValue: { fontSize: 12, fontWeight: "600", color: FORM_COLORS.ink },
+  finalTotal: { borderTopWidth: 1, borderTopColor: FORM_COLORS.border, paddingTop: 10, marginTop: 3, marginBottom: 0 },
+  finalTotalLabel: { fontSize: 12, fontWeight: "800", color: FORM_COLORS.ink },
+  finalTotalValue: { fontSize: 19, fontWeight: "800", color: FORM_COLORS.primaryDark },
+  optionalBadge: { backgroundColor: FORM_COLORS.pale, borderRadius: 9, paddingHorizontal: 8, paddingVertical: 5 },
+  optionalBadgeText: { color: FORM_COLORS.secondary, fontSize: 10, fontWeight: "600" },
+  photoDropZone: { minHeight: 128, alignItems: "center", justifyContent: "center", padding: 14, backgroundColor: "#FCFCFA", borderRadius: 13, borderWidth: 1, borderStyle: "dashed", borderColor: "#CAD8D4" },
+  photoDropIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: FORM_COLORS.mint, alignItems: "center", justifyContent: "center", marginBottom: 8 },
+  photoDropTitle: { color: FORM_COLORS.ink, fontSize: 12, fontWeight: "600", textAlign: "center" },
+  photoDropSubtitle: { color: FORM_COLORS.secondary, fontSize: 10, marginTop: 4 },
+  photoList: { marginTop: 12 },
+  photoPreviewContainer: { marginRight: 10, position: "relative" },
+  photoPreview: { width: 84, height: 84, borderRadius: 11 },
+  removePhotoButton: { position: "absolute", top: -5, right: -5, backgroundColor: FORM_COLORS.surface, borderRadius: 12, elevation: 3 },
+  bottomActionBar: { backgroundColor: FORM_COLORS.surface, borderTopWidth: 1, borderTopColor: FORM_COLORS.border, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8 },
+  saveButton: { minHeight: 50, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: FORM_COLORS.primary, paddingHorizontal: 16, borderRadius: 13 },
+  saveButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
+  imageButton: { flexDirection: "row", alignItems: "center", backgroundColor: FORM_COLORS.primary, paddingVertical: 14, paddingHorizontal: 20, borderRadius: 12, marginBottom: 15, justifyContent: "center" },
+  imageButtonText: { color: "#FFF", fontSize: 16, fontWeight: "600", marginLeft: 10 },
+  modalContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(15, 23, 42, 0.42)", padding: 18 },
+  modalContent: { backgroundColor: FORM_COLORS.surface, borderRadius: 20, padding: 20, width: "100%", maxWidth: 440, maxHeight: "84%", borderWidth: 1, borderColor: FORM_COLORS.border, elevation: 8 },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  modalTitle: { fontSize: 19, fontWeight: "700", color: FORM_COLORS.ink, textAlign: "center" },
+  workTypeModalTitle: { marginBottom: 18 },
+  addNewClientButton: { padding: 5 },
+  searchContainer: { flexDirection: "row", alignItems: "center", backgroundColor: FORM_COLORS.pale, borderRadius: 11, paddingHorizontal: 12, marginBottom: 12, borderWidth: 1, borderColor: FORM_COLORS.border },
+  searchIcon: { marginRight: 9 },
+  searchInput: { flex: 1, paddingVertical: 11, fontSize: 14, color: FORM_COLORS.ink },
+  clientList: { flexGrow: 0, flexShrink: 1, minHeight: 80, maxHeight: 360 },
+  modalItem: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: FORM_COLORS.border },
+  workTypeItem: { borderBottomWidth: 1, borderBottomColor: FORM_COLORS.border, paddingVertical: 3 },
+  workTypeRow: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  modalItemTouchable: { flex: 1, paddingVertical: 5 },
+  actionButton: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 9, backgroundColor: FORM_COLORS.pale },
+  workTypeDropdown: { width: 156, alignSelf: "flex-end", backgroundColor: FORM_COLORS.surface, borderRadius: 11, borderWidth: 1, borderColor: FORM_COLORS.border, paddingHorizontal: 5, marginBottom: 7, shadowColor: "#17201F", shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.1, shadowRadius: 7, elevation: 4 },
+  workTypeDropdownOption: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 9 },
+  workTypeDropdownText: { color: FORM_COLORS.ink, fontSize: 13, fontWeight: "600" },
+  workTypeDeleteText: { color: FORM_COLORS.danger },
+  workTypeDropdownDivider: { height: 1, backgroundColor: FORM_COLORS.border, marginHorizontal: 8 },
+  modalItemText: { fontSize: 14, color: FORM_COLORS.ink },
+  closeModalButton: { backgroundColor: FORM_COLORS.primary, paddingVertical: 12, borderRadius: 11, marginTop: 12, alignItems: "center" },
+  closeModalButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
+  emptyListText: { textAlign: "center", marginTop: 18, fontSize: 14, color: FORM_COLORS.secondary },
+  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, marginTop: 8 },
+  addButton: { padding: 5 },
+  subModalTitle: { fontSize: 14, fontWeight: "600", color: FORM_COLORS.ink, marginTop: 14, marginBottom: 5 },
+  addTypeContainer: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  addTypeInput: { flex: 1, backgroundColor: FORM_COLORS.pale, borderRadius: 10, padding: 12, fontSize: 14, color: FORM_COLORS.ink, borderWidth: 1, borderColor: FORM_COLORS.border, marginRight: 9 },
+  addTypeButton: { backgroundColor: FORM_COLORS.primary, padding: 12, borderRadius: 11, justifyContent: "center", alignItems: "center" },
+  workTypesList: { flexGrow: 0, flexShrink: 1, maxHeight: 240 },
+  timePickerModalContent: { width: "100%", maxWidth: 410, maxHeight: "90%", backgroundColor: FORM_COLORS.surface, borderRadius: 20, padding: 20, borderWidth: 1, borderColor: FORM_COLORS.border, elevation: 8 },
+  timePickerHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 },
+  timeSelectRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, marginBottom: 16 },
+  timeSelectColumn: { flex: 1, minWidth: 0 },
+  timeSelectLabel: { color: FORM_COLORS.secondary, fontSize: 11, fontWeight: "700", marginBottom: 6 },
+  timePickerSelect: { minHeight: 50, justifyContent: "center", borderRadius: 10, borderWidth: 1, borderColor: FORM_COLORS.border, backgroundColor: FORM_COLORS.pale, overflow: "hidden" },
+  nativeTimePicker: { width: "100%", height: Platform.OS === "ios" ? 130 : 50, color: FORM_COLORS.ink },
+  timePickerActions: { flexDirection: "row", gap: 9 },
+  timeCancelButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: FORM_COLORS.pale },
+  timeCancelText: { color: FORM_COLORS.secondary, fontSize: 13, fontWeight: "700" },
+  timeConfirmButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: FORM_COLORS.primary },
+  timeConfirmText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  alertOverlay: { flex: 1, backgroundColor: "rgba(15, 23, 42, 0.45)", justifyContent: "center", alignItems: "center", padding: 20 },
+  alertBox: { backgroundColor: FORM_COLORS.surface, borderRadius: 16, padding: 20, width: "90%", maxWidth: 400, elevation: 5 },
+  alertTitle: { fontSize: 18, fontWeight: "700", color: FORM_COLORS.ink, marginBottom: 10, textAlign: "center" },
+  alertMessage: { fontSize: 14, color: FORM_COLORS.secondary, marginBottom: 20, textAlign: "center", lineHeight: 21 },
+  alertButtons: { flexDirection: "row", justifyContent: "space-around", gap: 10 },
+  alertButton: { flex: 1, paddingVertical: 12, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  alertCancelButton: { backgroundColor: FORM_COLORS.pale, borderWidth: 1, borderColor: FORM_COLORS.border },
+  alertConfirmButton: { backgroundColor: FORM_COLORS.primary },
+  alertDestructiveButton: { backgroundColor: FORM_COLORS.danger },
+  alertCancelText: { fontSize: 14, fontWeight: "600", color: FORM_COLORS.secondary },
+  alertConfirmText: { fontSize: 14, fontWeight: "700", color: "#FFFFFF" },
 })
 
 export default NewWorkScreen

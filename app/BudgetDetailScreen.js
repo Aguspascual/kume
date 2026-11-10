@@ -1,23 +1,40 @@
 import { useState } from "react"
-import { ScrollView, StyleSheet, SafeAreaView, View, Text, TouchableOpacity, Alert, Modal, FlatList, TextInput, Image } from "react-native"
+import { ScrollView, StyleSheet, View, Text, TouchableOpacity, Modal, FlatList, TextInput, Image, Linking } from "react-native"
+import { SafeAreaView } from "react-native-safe-area-context"
 import { useRouter, useLocalSearchParams } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
-import AsyncStorage from "@react-native-async-storage/async-storage"
+import AsyncStorage from "../lib/backendStorage"
 import DateTimePicker from "@react-native-community/datetimepicker"
+import { createAndSharePdf } from "../lib/sharePdf"
+import { useAuth } from "../lib/auth"
+
+const parseBudgetParam = (value) => {
+  try {
+    const parsed = JSON.parse(value || "{}")
+    return { ...parsed, materiales: Array.isArray(parsed.materiales) ? parsed.materiales : [], photos: Array.isArray(parsed.photos) ? parsed.photos : [] }
+  } catch {
+    return { materiales: [], photos: [] }
+  }
+}
 
 const BudgetDetailScreen = () => {
   const router = useRouter()
-  const { presupuesto: presupuestoJSON } = useLocalSearchParams()
-  const [presupuesto, setPresupuesto] = useState(JSON.parse(presupuestoJSON))
+  const { session } = useAuth()
+  const { presupuesto: presupuestoParam } = useLocalSearchParams()
+  const presupuestoJSON = Array.isArray(presupuestoParam) ? presupuestoParam[0] : presupuestoParam
+  const [presupuesto, setPresupuesto] = useState(() => parseBudgetParam(presupuestoJSON))
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [showTimePicker, setShowTimePicker] = useState(false)
   const [selectedDate, setSelectedDate] = useState(new Date())
+  const [hasSelectedScheduleDate, setHasSelectedScheduleDate] = useState(false)
+  const [hasSelectedScheduleTime, setHasSelectedScheduleTime] = useState(false)
   const [convertModalVisible, setConvertModalVisible] = useState(false)
+  const [isExportingPdf, setIsExportingPdf] = useState(false)
   const [showAddMaterialModal, setShowAddMaterialModal] = useState(false)
   const [newMaterial, setNewMaterial] = useState({ descripcion: "", cantidad: "", precio: "" })
-  const [photos, setPhotos] = useState(presupuesto.photos || [])
+  const [photos] = useState(() => parseBudgetParam(presupuestoJSON).photos)
 
   // Estado para la alerta personalizada
   const [alertConfig, setAlertConfig] = useState({
@@ -53,16 +70,40 @@ const BudgetDetailScreen = () => {
     return Math.round(Number(amount) || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   }
 
+  const formatSafeDate = (dateValue) => {
+    const date = new Date(dateValue)
+    return Number.isNaN(date.getTime()) ? "Sin fecha" : format(date, "dd MMM yyyy", { locale: es })
+  }
+
+  const handleCall = async () => {
+    if (!presupuesto.telefono) return
+    try {
+      await Linking.openURL(`tel:${presupuesto.telefono}`)
+    } catch {
+      showCustomAlert("No se pudo iniciar la llamada", "Revisá que el teléfono esté disponible en este dispositivo.")
+    }
+  }
+
+  const handleWhatsApp = async () => {
+    const phone = String(presupuesto.telefono || "").replace(/\D/g, "")
+    if (!phone) return
+    try {
+      await Linking.openURL(`https://wa.me/${phone}`)
+    } catch {
+      showCustomAlert("WhatsApp no disponible", "No se pudo abrir la conversación en este dispositivo.")
+    }
+  }
+
   const getEstadoColor = (estado) => {
     switch (estado) {
       case "Aceptado":
-        return "#4CAF50"
+        return "#087F75"
       case "Pendiente":
-        return "#FF9800"
+        return "#A85D0A"
       case "Rechazado":
-        return "#F44336"
+        return "#748078"
       default:
-        return "#FF9800"
+        return "#A85D0A"
     }
   }
 
@@ -79,53 +120,9 @@ const BudgetDetailScreen = () => {
     }
   }
 
-  const cambiarEstadoPresupuesto = async (nuevoEstado) => {
-    try {
-      const presupuestosJSON = await AsyncStorage.getItem("presupuestos")
-      const presupuestos = presupuestosJSON ? JSON.parse(presupuestosJSON) : []
-
-      const presupuestosActualizados = presupuestos.map((p) =>
-        p.id === presupuesto.id ? { ...p, estado: nuevoEstado } : p,
-      )
-
-      await AsyncStorage.setItem("presupuestos", JSON.stringify(presupuestosActualizados))
-      setPresupuesto({ ...presupuesto, estado: nuevoEstado })
-      showCustomAlert("Éxito", `Estado del presupuesto cambiado a "${nuevoEstado}"`)
-    } catch (error) {
-      console.error("Error al cambiar estado del presupuesto:", error)
-      showCustomAlert("Error", "No se pudo cambiar el estado del presupuesto")
-    }
-  }
 
   const handleAceptarPresupuesto = () => {
-    showCustomAlert(
-      "Aceptar Presupuesto",
-      "¿Estás seguro que deseas aceptar este presupuesto? A continuación podrás programar la fecha del trabajo.",
-      {
-        cancelText: "Cancelar",
-        confirmText: "Aceptar",
-        onCancel: hideCustomAlert,
-        onConfirm: async () => {
-          hideCustomAlert()
-          
-          // Cambiar estado en UI y Storage a "Aceptado" para que quede registro
-          try {
-            const presupuestosJSON = await AsyncStorage.getItem("presupuestos")
-            const presupuestos = presupuestosJSON ? JSON.parse(presupuestosJSON) : []
-            const presupuestosActualizados = presupuestos.map((p) =>
-              p.id === presupuesto.id ? { ...p, estado: "Aceptado" } : p,
-            )
-            await AsyncStorage.setItem("presupuestos", JSON.stringify(presupuestosActualizados))
-            setPresupuesto({ ...presupuesto, estado: "Aceptado" })
-            
-            // Inmediatamente mostrar opciones de fecha
-            mostrarModalConversion()
-          } catch(e) {
-             showCustomAlert("Error", "No se pudo actualizar el estado del presupuesto")
-          }
-        }
-      }
-    )
+    mostrarModalConversion()
   }
 
   const handleRechazarPresupuesto = () => {
@@ -254,33 +251,37 @@ const BudgetDetailScreen = () => {
   }
 
   const mostrarModalConversion = () => {
+    setSelectedDate(new Date())
+    setHasSelectedScheduleDate(false)
+    setHasSelectedScheduleTime(false)
     setConvertModalVisible(true)
   }
 
-  const convertirATrabajo = () => {
-    setConvertModalVisible(false)
-    setShowDatePicker(true)
-  }
-
-  const onDateChange = (event, selectedDate) => {
+  const onDateValueChange = (event, selectedDate) => {
     setShowDatePicker(false)
     if (selectedDate) {
       setSelectedDate(selectedDate)
-      setShowTimePicker(true)
-    } else {
-      // Si el usuario cancela, volvemos a "Pendiente"
-      cambiarEstadoPresupuesto("Pendiente")
+      setHasSelectedScheduleDate(true)
     }
   }
 
-  const onTimeChange = async (event, selectedTime) => {
+  const onTimeValueChange = (event, selectedTime) => {
     setShowTimePicker(false)
     if (selectedTime) {
-      const finalDate = new Date(selectedDate)
-      finalDate.setHours(selectedTime.getHours())
-      finalDate.setMinutes(selectedTime.getMinutes())
+      const updatedDate = new Date(selectedDate)
+      updatedDate.setHours(selectedTime.getHours())
+      updatedDate.setMinutes(selectedTime.getMinutes())
+      setSelectedDate(updatedDate)
+      setHasSelectedScheduleTime(true)
+    }
+  }
 
-      try {
+  const convertirATrabajo = async () => {
+    if (!hasSelectedScheduleDate || !hasSelectedScheduleTime) return
+    const finalDate = new Date(selectedDate)
+    setConvertModalVisible(false)
+
+    try {
         const trabajosJSON = await AsyncStorage.getItem("trabajos")
         const trabajosExistentes = trabajosJSON ? JSON.parse(trabajosJSON) : []
 
@@ -348,218 +349,233 @@ const BudgetDetailScreen = () => {
       } catch (error) {
         console.error("Error al convertir presupuesto a trabajo:", error)
         showCustomAlert("Error", "No se pudo convertir el presupuesto a trabajo")
-      }
-    } else {
-      // Si el usuario cancela en el timepicker, volvemos a "Pendiente"
-      cambiarEstadoPresupuesto("Pendiente")
     }
   }
 
   const renderMaterialItem = ({ item, index }) => (
     <View style={styles.materialItem}>
-      <View style={styles.materialHeader}>
-        <Text style={styles.materialNumber}>{index + 1}.</Text>
-        <Text style={styles.materialDescription}>{item.descripcion}</Text>
-        <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteMaterial(index)}>
-          <Ionicons name="trash-outline" size={20} color="#F44336" />
-        </TouchableOpacity>
+      <View style={styles.materialCopy}>
+        <Text style={styles.materialDescription}>{item.descripcion || "Material"}</Text>
+        <Text style={styles.materialMeta}>Cant. {item.cantidad || 0} · Unitario ${formatCurrency(item.precio)}</Text>
       </View>
-      <View style={styles.materialDetails}>
-        <Text style={styles.materialQuantity}>Cantidad: {item.cantidad}</Text>
-        <Text style={styles.materialPrice}>
-          Precio c/u: ${formatCurrency(item.precio)}
-        </Text>
-        <Text style={styles.materialSubtotal}>
-          Subtotal: ${formatCurrency(Number.parseFloat(item.cantidad) * Number.parseFloat(item.precio))}
-        </Text>
+      <View style={styles.materialTrailing}>
+        <Text style={styles.materialSubtotal}>${formatCurrency(Number(item.cantidad) * Number(item.precio))}</Text>
+        <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteMaterial(index)} accessibilityRole="button" accessibilityLabel={`Eliminar ${item.descripcion || "material"}`}>
+          <Ionicons name="trash-outline" size={17} color="#A85D0A" />
+        </TouchableOpacity>
       </View>
     </View>
   )
 
   const renderPhotoItem = ({ item }) => (
-    <Image source={{ uri: item }} style={styles.photo} />
+    <Image source={{ uri: typeof item === "string" ? item : item?.uri }} style={styles.photo} />
   )
 
+  const materiales = Array.isArray(presupuesto.materiales) ? presupuesto.materiales : []
+  const totalMateriales = Number(presupuesto.totalMateriales ?? materiales.reduce((sum, item) => sum + Number(item.cantidad || 0) * Number(item.precio || 0), 0)) || 0
+  const costoManoDeObra = Number(presupuesto.costoManoDeObra) || 0
+  const totalPresupuesto = Number(presupuesto.total ?? totalMateriales + costoManoDeObra) || 0
+  const estado = presupuesto.estado || "Pendiente"
+
+  const handleExportPdf = async () => {
+    setIsExportingPdf(true)
+    try {
+      await createAndSharePdf({
+        documentType: "PRESUPUESTO",
+        title: "Detalle del presupuesto",
+        subtitle: "Cotización de trabajo y servicios",
+        status: estado,
+        client: {
+          name: presupuesto.clienteNombre,
+          phone: presupuesto.telefono,
+          address: presupuesto.direccion,
+          description: presupuesto.descripcionTrabajo,
+        },
+        responsable: {
+          name: session?.user?.display_name,
+          phone: session?.user?.contact_phone,
+        },
+        serviceDetails: [
+          ["Tipo de trabajo", presupuesto.tipoTrabajo],
+          ["Creado", formatSafeDate(presupuesto.fechaCreacion)],
+          ["Válido hasta", formatSafeDate(presupuesto.fechaValidez)],
+          ["Referencia", presupuesto.id ? String(presupuesto.id) : ""],
+        ],
+        materials: materiales.map((item) => ({
+          descripcion: item.descripcion || "Material",
+          cantidad: item.cantidad ?? "—",
+          precioUnitario: `$ ${formatCurrency(item.precio)}`,
+          subtotal: `$ ${formatCurrency(Number(item.cantidad) * Number(item.precio))}`,
+        })),
+        costs: {
+          materials: `$ ${formatCurrency(totalMateriales)}`,
+          labor: `$ ${formatCurrency(costoManoDeObra)}`,
+          total: `$ ${formatCurrency(totalPresupuesto)} ARS`,
+        },
+        photos: presupuesto.photos || [],
+      })
+    } catch (error) {
+      console.error("Error al generar PDF del presupuesto:", error)
+      showCustomAlert("No se pudo generar el PDF", "Intentá de nuevo en unos segundos.")
+    } finally {
+      setIsExportingPdf(false)
+    }
+  }
+
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top", "left", "right", "bottom"]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back-outline" size={28} color="#fff" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backButton} accessibilityRole="button" accessibilityLabel="Volver a presupuestos">
+          <Ionicons name="arrow-back" size={21} color={stylesTheme.ink} />
         </TouchableOpacity>
-        <Text style={styles.title} numberOfLines={1}>Presupuesto</Text>
+        <Text style={styles.title} numberOfLines={1}>Detalle del presupuesto</Text>
+        <TouchableOpacity onPress={handleExportPdf} style={styles.headerSpacer} accessibilityRole="button" accessibilityLabel="Generar PDF del presupuesto" disabled={isExportingPdf}>
+          <Ionicons name={isExportingPdf ? "hourglass-outline" : "document-text-outline"} size={19} color={stylesTheme.primary} />
+        </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.detailsContainer}>
-          <View
-            style={[
-              styles.detailItem,
-              { borderLeftColor: getEstadoColor(presupuesto.estado) },
-            ]}
-          >
-            <View style={styles.estadoContainer}>
-              <View style={styles.estadoInfo}>
-                <Text style={styles.label}>Estado del Presupuesto:</Text>
-                <View style={styles.estadoBadge}>
-                  <Ionicons
-                    name={getEstadoIcon(presupuesto.estado)}
-                    size={20}
-                    color={getEstadoColor(presupuesto.estado)}
-                  />
-                  <Text style={[styles.estadoText, { color: getEstadoColor(presupuesto.estado) }]}>
-                    {presupuesto.estado}
-                  </Text>
-                </View>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <View style={styles.content}>
+          <View style={styles.statusCard}>
+            <View style={styles.statusTopRow}>
+              <View style={[styles.statusBadge, { backgroundColor: estado === "Pendiente" ? stylesTheme.amberSoft : estado === "Aceptado" ? stylesTheme.tealSoft : stylesTheme.neutralSoft }]}>
+                <Ionicons name={getEstadoIcon(estado)} size={15} color={getEstadoColor(estado)} />
+                <Text style={[styles.statusText, { color: getEstadoColor(estado) }]}>{estado}</Text>
               </View>
-
-              <View style={styles.botonesContainer}>
-                {presupuesto.estado === "Pendiente" && (
-                  <>
-                    <TouchableOpacity
-                      style={[styles.estadoButton, styles.estadoButtonSuccess]}
-                      onPress={handleAceptarPresupuesto}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="checkmark-circle" size={24} color="white" />
-                      <Text style={styles.estadoButtonText}>Aceptar Presupuesto</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.estadoButton, styles.estadoButtonDanger]}
-                      onPress={handleRechazarPresupuesto}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="close-circle" size={24} color="white" />
-                      <Text style={styles.estadoButtonText}>Rechazar Presupuesto</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-
-                {presupuesto.estado === "Aceptado" && (
-                  <TouchableOpacity
-                    style={[styles.estadoButton, styles.convertButton]}
-                    onPress={mostrarModalConversion}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="hammer" size={24} color="white" />
-                    <Text style={styles.estadoButtonText}>Convertir a Trabajo</Text>
-                  </TouchableOpacity>
-                )}
+              {!!presupuesto.id && <Text style={styles.referenceText}>ID {String(presupuesto.id).slice(-8)}</Text>}
+            </View>
+            <View style={styles.statusDivider} />
+            <View style={styles.datesRow}>
+              <View style={styles.dateColumn}>
+                <Text style={styles.metaLabel}>CREADO</Text>
+                <Text style={styles.metaValue}>{formatSafeDate(presupuesto.fechaCreacion)}</Text>
+              </View>
+              <View style={styles.dateColumn}>
+                <Text style={styles.metaLabel}>VÁLIDO HASTA</Text>
+                <Text style={styles.metaValue}>{formatSafeDate(presupuesto.fechaValidez)}</Text>
               </View>
             </View>
           </View>
 
-          <View style={styles.detailItem}>
-            <Text style={styles.label}>Cliente:</Text>
-            <Text style={styles.value}>{presupuesto.clienteNombre}</Text>
+          <View style={styles.card}>
+            <View style={styles.sectionHeading}>
+              <View style={styles.sectionIcon}><Ionicons name="person-outline" size={18} color={stylesTheme.primary} /></View>
+              <Text style={styles.sectionTitle}>Cliente</Text>
+            </View>
+            <Text style={styles.clientName}>{presupuesto.clienteNombre || "Cliente"}</Text>
+            {!!presupuesto.telefono && (
+              <View style={styles.contactRow}>
+                <Ionicons name="call-outline" size={16} color={stylesTheme.muted} />
+                <Text style={styles.contactValue}>{presupuesto.telefono}</Text>
+                <TouchableOpacity style={styles.contactAction} onPress={handleCall} accessibilityLabel="Llamar al cliente"><Ionicons name="call-outline" size={17} color={stylesTheme.primary} /></TouchableOpacity>
+                <TouchableOpacity style={[styles.contactAction, styles.whatsAppAction]} onPress={handleWhatsApp} accessibilityLabel="Abrir WhatsApp"><Ionicons name="logo-whatsapp" size={17} color={stylesTheme.primary} /></TouchableOpacity>
+              </View>
+            )}
+            {!!presupuesto.direccion && (
+              <View style={styles.contactRow}>
+                <Ionicons name="location-outline" size={16} color={stylesTheme.muted} />
+                <Text style={styles.contactValue}>{presupuesto.direccion}</Text>
+              </View>
+            )}
           </View>
 
-          <View style={styles.detailItem}>
-            <Text style={styles.label}>Dirección:</Text>
-            <Text style={styles.value}>{presupuesto.direccion || "No especificada"}</Text>
+          <View style={styles.card}>
+            <View style={styles.sectionHeading}>
+              <View style={styles.sectionIcon}><Ionicons name="construct-outline" size={18} color={stylesTheme.primary} /></View>
+              <Text style={styles.sectionTitle}>Alcance del trabajo</Text>
+            </View>
+            <Text style={styles.workType}>{presupuesto.tipoTrabajo || "Trabajo"}</Text>
+            <Text style={styles.description}>{presupuesto.descripcionTrabajo || "Sin descripción del trabajo."}</Text>
           </View>
 
-          <View style={styles.detailItem}>
-            <Text style={styles.label}>Teléfono:</Text>
-            <Text style={styles.value}>{presupuesto.telefono}</Text>
+          <View style={styles.costCard}>
+            <View style={styles.sectionHeading}>
+              <View style={styles.sectionIcon}><Ionicons name="receipt-outline" size={18} color={stylesTheme.primary} /></View>
+              <Text style={styles.sectionTitle}>Resumen del presupuesto</Text>
+            </View>
+            <View style={styles.costRow}><Text style={styles.costLabel}>Materiales</Text><Text style={styles.costValue}>{"$"}{formatCurrency(totalMateriales)}</Text></View>
+            <View style={styles.costRow}><Text style={styles.costLabel}>Mano de obra</Text><Text style={styles.costValue}>{"$"}{formatCurrency(costoManoDeObra)}</Text></View>
+            <View style={styles.costDivider} />
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Total</Text><Text style={styles.totalValue}>{"$"}{formatCurrency(totalPresupuesto)} <Text style={styles.totalCurrency}>ARS</Text></Text></View>
           </View>
 
-          <View style={styles.detailItem}>
-            <Text style={styles.label}>Tipo de Trabajo:</Text>
-            <Text style={styles.value}>{presupuesto.tipoTrabajo}</Text>
-          </View>
-
-          <View style={styles.detailItem}>
-            <Text style={styles.label}>Descripción del Trabajo:</Text>
-            <Text style={styles.value}>{presupuesto.descripcionTrabajo}</Text>
-          </View>
-
-          <View style={styles.materialesSection}>
-            <View style={styles.sectionHeader}>
+          <View style={styles.card}>
+            <View style={styles.sectionHeading}>
+              <View style={styles.sectionIcon}><Ionicons name="cube-outline" size={18} color={stylesTheme.primary} /></View>
               <Text style={styles.sectionTitle}>Materiales</Text>
-              <TouchableOpacity style={styles.addButton} onPress={() => setShowAddMaterialModal(true)}>
-                <Ionicons name="add-circle-outline" size={24} color="#003366" />
+              <TouchableOpacity style={styles.addButton} onPress={() => setShowAddMaterialModal(true)} accessibilityRole="button">
+                <Ionicons name="add" size={18} color={stylesTheme.primary} />
                 <Text style={styles.addButtonText}>Agregar</Text>
               </TouchableOpacity>
             </View>
-            {presupuesto.materiales.length > 0 ? (
-              <FlatList
-                data={presupuesto.materiales}
-                renderItem={renderMaterialItem}
-                keyExtractor={(item, index) => `material-${index}`}
-                scrollEnabled={false}
-              />
+            {materiales.length > 0 ? (
+              <FlatList data={materiales} renderItem={renderMaterialItem} keyExtractor={(item, index) => String(index)} scrollEnabled={false} />
             ) : (
               <Text style={styles.emptyListText}>No hay materiales registrados.</Text>
             )}
           </View>
 
           {photos.length > 0 && (
-            <View style={styles.photosSection}>
-              <Text style={styles.sectionTitle}>Fotos del Presupuesto</Text>
-              <FlatList
-                data={photos}
-                renderItem={renderPhotoItem}
-                keyExtractor={(item, index) => `photo-${index}`}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.photosList}
-              />
+            <View style={styles.card}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionIcon}><Ionicons name="images-outline" size={18} color={stylesTheme.primary} /></View>
+                <Text style={styles.sectionTitle}>Fotos del presupuesto</Text>
+              </View>
+              <FlatList data={photos} renderItem={renderPhotoItem} keyExtractor={(item, index) => String(index)} horizontal showsHorizontalScrollIndicator={false} style={styles.photosList} />
             </View>
           )}
-
-          <View style={styles.costosSection}>
-            <View style={styles.costoItem}>
-              <Text style={styles.costoLabel}>Total Materiales:</Text>
-              <Text style={styles.costoValue}>${formatCurrency(presupuesto.totalMateriales)}</Text>
-            </View>
-
-            <View style={styles.costoItem}>
-              <Text style={styles.costoLabel}>Mano de Obra:</Text>
-              <Text style={styles.costoValue}>${formatCurrency(presupuesto.costoManoDeObra)}</Text>
-            </View>
-
-            <View style={[styles.costoItem, styles.totalFinal]}>
-              <Text style={styles.totalLabel}>TOTAL:</Text>
-              <Text style={styles.totalValue}>${formatCurrency(presupuesto.total)}</Text>
-            </View>
-          </View>
-
-          <View style={styles.fechasSection}>
-            <View style={styles.fechaItem}>
-              <Text style={styles.label}>Fecha de Creación:</Text>
-              <Text style={styles.value}>
-                {format(new Date(presupuesto.fechaCreacion), "dd/MM/yyyy", { locale: es })}
-              </Text>
-            </View>
-
-            <View style={styles.fechaItem}>
-              <Text style={styles.label}>Válido hasta:</Text>
-              <Text style={styles.value}>
-                {format(new Date(presupuesto.fechaValidez), "dd/MM/yyyy", { locale: es })}
-              </Text>
-            </View>
-          </View>
         </View>
       </ScrollView>
+
+      {estado === "Pendiente" && (
+        <View style={styles.bottomActions}>
+          <TouchableOpacity style={styles.primaryAction} onPress={handleAceptarPresupuesto} activeOpacity={0.85}>
+            <Ionicons name="checkmark-circle-outline" size={19} color="#FFFFFF" />
+            <Text style={styles.primaryActionText}>Aceptar presupuesto</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.rejectAction} onPress={handleRechazarPresupuesto} activeOpacity={0.75}>
+            <Ionicons name="close-circle-outline" size={17} color={stylesTheme.amber} />
+            <Text style={styles.rejectActionText}>Rechazar presupuesto</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {estado === "Aceptado" && (
+        <View style={styles.bottomActions}>
+          <TouchableOpacity style={styles.primaryAction} onPress={mostrarModalConversion} activeOpacity={0.85}>
+            <Ionicons name="calendar-outline" size={19} color="#FFFFFF" />
+            <Text style={styles.primaryActionText}>Convertir a trabajo</Text>
+          </TouchableOpacity>
+          <Text style={styles.bottomHint}>El siguiente paso es programar fecha y hora.</Text>
+        </View>
+      )}
 
       <Modal
         visible={convertModalVisible}
         transparent={true}
         animationType="slide"
+        statusBarTranslucent
+        navigationBarTranslucent
         onRequestClose={() => setConvertModalVisible(false)}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Convertir a Trabajo</Text>
-            <Text style={styles.modalSubtitle}>
-              Se creará un nuevo trabajo basado en este presupuesto. Selecciona la fecha y hora para
-              programarlo.
-            </Text>
+            <Text style={styles.modalTitle}>Aceptar y programar</Text>
+            <Text style={styles.modalSubtitle}>Elegí cuándo se realizará el trabajo. El presupuesto se acepta al confirmar la fecha y la hora.</Text>
 
-            <TouchableOpacity style={styles.confirmButton} onPress={convertirATrabajo}>
-              <Ionicons name="calendar-outline" size={24} color="white" />
-              <Text style={styles.confirmButtonText}>Seleccionar Fecha y Hora</Text>
+            <TouchableOpacity style={styles.schedulePickerButton} onPress={() => setShowDatePicker(true)} accessibilityRole="button">
+              <View style={styles.schedulePickerIcon}><Ionicons name="calendar-outline" size={19} color={stylesTheme.primary} /></View>
+              <View style={styles.schedulePickerCopy}><Text style={styles.schedulePickerLabel}>Fecha</Text><Text style={styles.schedulePickerValue}>{hasSelectedScheduleDate ? format(selectedDate, "EEEE d 'de' MMMM yyyy", { locale: es }) : "Seleccionar fecha"}</Text></View>
+              <Ionicons name="chevron-forward" size={18} color={stylesTheme.secondary} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.schedulePickerButton} onPress={() => setShowTimePicker(true)} accessibilityRole="button">
+              <View style={styles.schedulePickerIcon}><Ionicons name="time-outline" size={19} color={stylesTheme.primary} /></View>
+              <View style={styles.schedulePickerCopy}><Text style={styles.schedulePickerLabel}>Hora</Text><Text style={styles.schedulePickerValue}>{hasSelectedScheduleTime ? format(selectedDate, "HH:mm 'hs'") : "Seleccionar hora"}</Text></View>
+              <Ionicons name="chevron-forward" size={18} color={stylesTheme.secondary} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.confirmButton, (!hasSelectedScheduleDate || !hasSelectedScheduleTime) && styles.confirmButtonDisabled]} onPress={convertirATrabajo} disabled={!hasSelectedScheduleDate || !hasSelectedScheduleTime} accessibilityRole="button">
+              <Ionicons name="checkmark-circle-outline" size={20} color="white" />
+              <Text style={styles.confirmButtonText}>Aceptar presupuesto</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.cancelButton} onPress={() => setConvertModalVisible(false)}>
@@ -620,13 +636,14 @@ const BudgetDetailScreen = () => {
           value={selectedDate}
           mode="date"
           display="default"
-          onChange={onDateChange}
+          onValueChange={onDateValueChange}
+          onDismiss={() => setShowDatePicker(false)}
           minimumDate={new Date()}
         />
       )}
 
       {showTimePicker && (
-        <DateTimePicker value={selectedDate} mode="time" display="default" onChange={onTimeChange} />
+        <DateTimePicker value={selectedDate} mode="time" display="default" onValueChange={onTimeValueChange} onDismiss={() => setShowTimePicker(false)} />
       )}
 
       {/* Custom Alert Modal */}
@@ -667,477 +684,103 @@ const BudgetDetailScreen = () => {
   )
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F8F9FA",
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 20,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#2F4550",
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    paddingBottom: 20,
-    paddingTop: 50,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    position: "absolute",
-    left: 20,
-    bottom: 12,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#FFF",
-    flex: 1,
-    textAlign: "center",
-  },
-  detailsContainer: {
-    flex: 1,
-    backgroundColor: "#FFF",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 25,
-    marginTop: -20,
-  },
-  detailItem: {
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 3,
-    borderLeftWidth: 4,
-    borderLeftColor: "transparent",
-  },
-  estadoContainer: {
-    flexDirection: "column",
-    alignItems: "stretch",
-  },
-  estadoInfo: {
-    marginBottom: 15,
-  },
-  estadoBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 5,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  estadoText: {
-    fontSize: 18,
-    fontWeight: "700",
-    marginLeft: 8,
-  },
-  botonesContainer: {
-    flexDirection: "column",
-    gap: 12,
-  },
-  estadoButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 5,
-    minHeight: 50,
-  },
-  estadoButtonSuccess: {
-    backgroundColor: "#4CAF50",
-  },
-  estadoButtonDanger: {
-    backgroundColor: "#F44336",
-  },
-  convertButton: {
-    backgroundColor: "#003366",
-  },
-  estadoButtonText: {
-    color: "white",
-    fontWeight: "700",
-    marginLeft: 8,
-    fontSize: 16,
-    textAlign: "center",
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: "#666",
-    marginBottom: 5,
-  },
-  value: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 15,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  materialesSection: {
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  materialItem: {
-    backgroundColor: "#FFF",
-    borderRadius: 8,
-    padding: 15,
-    marginBottom: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: "#003366",
-  },
-  materialHeader: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    marginBottom: 8,
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  materialNumber: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#003366",
-    marginRight: 8,
-    minWidth: 20,
-  },
-  materialDescription: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#333",
-    flex: 1,
-  },
-  materialDetails: {
-    marginLeft: 28,
-  },
-  materialQuantity: {
-    fontSize: 14,
-    color: "#666",
-    marginBottom: 2,
-  },
-  materialPrice: {
-    fontSize: 14,
-    color: "#666",
-    marginBottom: 2,
-  },
-  materialSubtotal: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  deleteButton: {
-    marginLeft: 10,
-    padding: 5,
-  },
-  addButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#E1E5EA",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-  },
-  addButtonText: {
-    color: "#2F4550",
-    fontWeight: "600",
-    marginLeft: 5,
-  },
-  costosSection: {
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  costoItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  costoLabel: {
-    fontSize: 16,
-    color: "#2F4550",
-  },
-  costoValue: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#2F4550",
-  },
-  totalFinal: {
-    borderTopWidth: 1,
-    borderTopColor: "#E1E5EA",
-    paddingTop: 10,
-    marginTop: 10,
-  },
-  totalLabel: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#2F4550",
-  },
-  totalValue: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#4CAF50",
-  },
-  fechasSection: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  fechaItem: {
-    flex: 1,
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  modalContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.6)",
-  },
-  modalContent: {
-    backgroundColor: "#fff",
-    borderRadius: 15,
-    padding: 30,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 10,
-    width: "90%",
-  },
-  addMaterialModalContent: {
-    backgroundColor: "#fff",
-    borderRadius: 15,
-    padding: 25,
-    width: "90%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 10,
-  },
-  input: {
-    width: "100%",
-    backgroundColor: "#F5F7FA",
-    borderRadius: 8,
-    padding: 15,
-    marginBottom: 15,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-    color: "#2F4550",
-  },
-  addButtonModal: {
-    backgroundColor: "#4CAF50",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 15,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  addButtonModalText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#2F4550",
-    textAlign: "center",
-    marginBottom: 10,
-  },
-  modalSubtitle: {
-    fontSize: 16,
-    color: "#666",
-    textAlign: "center",
-    marginBottom: 30,
-    lineHeight: 22,
-  },
-  confirmButton: {
-    backgroundColor: "#2F4550",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 15,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  confirmButtonText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  cancelButton: {
-    backgroundColor: "#F44336",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 15,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    marginBottom: 15,
-    width: "100%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  cancelButtonText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "600",
-    textAlign: "center",
-  },
-  photosSection: {
-    backgroundColor: "#F5F7FA",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#E1E5EA",
-  },
-  photosList: {
-    marginTop: 15,
-  },
-  photo: {
-    width: 120,
-    height: 120,
-    borderRadius: 12,
-    marginRight: 15,
-    borderWidth: 2,
-    borderColor: "#E1E5EA",
-  },
-  emptyListText: {
-    textAlign: "center",
-    marginTop: 10,
-    fontSize: 14,
-    color: "#999",
-    fontStyle: "italic",
-  },
-  // Custom Alert Styles
-  alertOverlay: {
-      flex: 1,
-      backgroundColor: "rgba(0, 0, 0, 0.5)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 20,
-  },
-  alertBox: {
-      backgroundColor: "#FFF",
-      borderRadius: 15,
-      padding: 20,
-      width: "90%",
-      maxWidth: 400,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 10,
-      elevation: 5,
-  },
-  alertTitle: {
-      fontSize: 18,
-      fontWeight: "bold",
-      color: "#2F4550",
-      marginBottom: 10,
-      textAlign: "center",
-  },
-  alertMessage: {
-      fontSize: 15,
-      color: "#555",
-      marginBottom: 20,
-      textAlign: "center",
-      lineHeight: 22,
-  },
-  alertButtons: {
-      flexDirection: "row",
-      justifyContent: "space-around",
-      gap: 10,
-  },
-  alertButton: {
-      flex: 1,
-      paddingVertical: 12,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-  },
-  alertCancelButton: {
-      backgroundColor: "#F5F7FA",
-      borderWidth: 1,
-      borderColor: "#E1E5EA",
-  },
-  alertConfirmButton: {
-      backgroundColor: "#2196F3",
-  },
-  alertDestructiveButton: {
-      backgroundColor: "#F44336",
-  },
-  alertCancelText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#555",
-  },
-  alertConfirmText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#FFF",
-  },
-});
+const stylesTheme = {
+  canvas: "#FAF9F6",
+  surface: "#FFFFFF",
+  ink: "#1A1C1A",
+  muted: "#748078",
+  line: "#EAE7E1",
+  primary: "#00685F",
+  tealSoft: "#E7F5F1",
+  amber: "#A85D0A",
+  amberSoft: "#FFF1D9",
+  neutralSoft: "#EEF0ED",
+}
 
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: stylesTheme.canvas },
+  header: { minHeight: 56, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: stylesTheme.line, backgroundColor: stylesTheme.canvas },
+  backButton: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 10 },
+  title: { flex: 1, color: stylesTheme.ink, fontSize: 16, fontWeight: "700", textAlign: "center" },
+  headerSpacer: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: stylesTheme.tealSoft },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 20 },
+  content: { gap: 12 },
+  statusCard: { backgroundColor: stylesTheme.surface, borderRadius: 16, borderWidth: 1, borderColor: stylesTheme.line, padding: 15, marginBottom: 1 },
+  statusTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  statusBadge: { minHeight: 29, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, borderRadius: 15 },
+  statusText: { fontSize: 12, fontWeight: "700" },
+  referenceText: { color: stylesTheme.muted, fontSize: 11, fontWeight: "600" },
+  statusDivider: { height: 1, backgroundColor: stylesTheme.line, marginVertical: 12 },
+  datesRow: { flexDirection: "row", gap: 16 },
+  dateColumn: { flex: 1 },
+  metaLabel: { color: stylesTheme.muted, fontSize: 9, fontWeight: "700", letterSpacing: 0.6, marginBottom: 4 },
+  metaValue: { color: stylesTheme.ink, fontSize: 12, fontWeight: "600" },
+  card: { backgroundColor: stylesTheme.surface, borderRadius: 16, borderWidth: 1, borderColor: stylesTheme.line, padding: 15 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 11 },
+  sectionIcon: { width: 30, height: 30, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: stylesTheme.tealSoft },
+  sectionTitle: { flex: 1, color: stylesTheme.ink, fontSize: 14, fontWeight: "700" },
+  clientName: { color: stylesTheme.ink, fontSize: 17, fontWeight: "800", marginBottom: 7 },
+  contactRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 5 },
+  contactValue: { flex: 1, color: stylesTheme.muted, fontSize: 12, lineHeight: 18 },
+  contactAction: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: 9, borderWidth: 1, borderColor: stylesTheme.line, backgroundColor: stylesTheme.surface },
+  whatsAppAction: { backgroundColor: stylesTheme.tealSoft, borderColor: "#BCE5DE" },
+  workType: { color: stylesTheme.primary, fontSize: 12, fontWeight: "700", marginBottom: 5 },
+  description: { color: stylesTheme.ink, fontSize: 13, lineHeight: 20 },
+  costCard: { backgroundColor: "#FFFCF7", borderRadius: 16, borderWidth: 1, borderColor: "#F1D7B1", padding: 15 },
+  costRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 6 },
+  costLabel: { color: stylesTheme.muted, fontSize: 12 },
+  costValue: { color: stylesTheme.ink, fontSize: 13, fontWeight: "600" },
+  costDivider: { height: 1, backgroundColor: "#F1D7B1", marginVertical: 7 },
+  totalRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" },
+  totalLabel: { color: stylesTheme.ink, fontSize: 14, fontWeight: "700" },
+  totalValue: { color: stylesTheme.primary, fontSize: 23, fontWeight: "800" },
+  totalCurrency: { color: stylesTheme.muted, fontSize: 11, fontWeight: "600" },
+  addButton: { minHeight: 34, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 3, paddingHorizontal: 8, borderRadius: 8, backgroundColor: stylesTheme.tealSoft },
+  addButtonText: { color: stylesTheme.primary, fontSize: 11, fontWeight: "700" },
+  materialItem: { minHeight: 58, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingVertical: 10, borderTopWidth: 1, borderTopColor: "#F0EFEB" },
+  materialCopy: { flex: 1 },
+  materialDescription: { color: stylesTheme.ink, fontSize: 12, fontWeight: "700" },
+  materialMeta: { color: stylesTheme.muted, fontSize: 10, marginTop: 4 },
+  materialTrailing: { flexDirection: "row", alignItems: "center", gap: 3 },
+  materialSubtotal: { color: stylesTheme.ink, fontSize: 12, fontWeight: "700" },
+  deleteButton: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: 8 },
+  emptyListText: { color: stylesTheme.muted, fontSize: 12, lineHeight: 18, paddingVertical: 8 },
+  photosList: { marginTop: 2 },
+  photo: { width: 112, height: 112, borderRadius: 12, marginRight: 10, backgroundColor: stylesTheme.neutralSoft },
+  bottomActions: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 7, borderTopWidth: 1, borderTopColor: stylesTheme.line, backgroundColor: "rgba(250,249,246,0.98)" },
+  primaryAction: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 10, backgroundColor: stylesTheme.primary },
+  primaryActionText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  rejectAction: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 2 },
+  rejectActionText: { color: stylesTheme.amber, fontSize: 12, fontWeight: "700" },
+  bottomHint: { color: stylesTheme.muted, fontSize: 10, textAlign: "center", marginTop: 7 },
+  modalContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(15,23,42,0.45)", padding: 20 },
+  modalContent: { width: "100%", maxWidth: 420, backgroundColor: stylesTheme.surface, borderRadius: 18, padding: 22, alignItems: "stretch" },
+  addMaterialModalContent: { width: "100%", maxWidth: 420, backgroundColor: stylesTheme.surface, borderRadius: 18, padding: 22 },
+  modalTitle: { color: stylesTheme.ink, fontSize: 18, fontWeight: "700", textAlign: "center", marginBottom: 9 },
+  modalSubtitle: { color: stylesTheme.muted, fontSize: 13, lineHeight: 19, textAlign: "center", marginBottom: 18 },
+  schedulePickerButton: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 11, paddingHorizontal: 11, borderWidth: 1, borderColor: stylesTheme.line, borderRadius: 12, backgroundColor: stylesTheme.canvas, marginBottom: 9 },
+  schedulePickerIcon: { width: 38, height: 38, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: stylesTheme.tealSoft },
+  schedulePickerCopy: { flex: 1 },
+  schedulePickerLabel: { color: stylesTheme.muted, fontSize: 10, fontWeight: "700", marginBottom: 3 },
+  schedulePickerValue: { color: stylesTheme.ink, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  confirmButton: { minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: stylesTheme.primary, borderRadius: 9, marginBottom: 8 },
+  confirmButtonDisabled: { opacity: 0.45 },
+  confirmButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  cancelButton: { minHeight: 42, alignItems: "center", justifyContent: "center", borderRadius: 9, backgroundColor: stylesTheme.neutralSoft },
+  cancelButtonText: { color: stylesTheme.ink, fontSize: 13, fontWeight: "600" },
+  input: { minHeight: 46, backgroundColor: stylesTheme.canvas, borderRadius: 9, paddingHorizontal: 12, marginBottom: 11, fontSize: 13, borderWidth: 1, borderColor: stylesTheme.line, color: stylesTheme.ink },
+  addButtonModal: { minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: stylesTheme.primary, borderRadius: 9, marginTop: 3, marginBottom: 8 },
+  addButtonModalText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  alertOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.45)", justifyContent: "center", alignItems: "center", padding: 20 },
+  alertBox: { width: "100%", maxWidth: 400, backgroundColor: stylesTheme.surface, borderRadius: 16, padding: 21 },
+  alertTitle: { fontSize: 18, fontWeight: "700", color: stylesTheme.ink, marginBottom: 8, textAlign: "center" },
+  alertMessage: { fontSize: 14, lineHeight: 21, color: stylesTheme.muted, marginBottom: 20, textAlign: "center" },
+  alertButtons: { flexDirection: "row", gap: 10, justifyContent: "flex-end" },
+  alertButton: { flex: 1, minHeight: 44, paddingVertical: 12, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  alertCancelButton: { backgroundColor: stylesTheme.neutralSoft },
+  alertConfirmButton: { backgroundColor: stylesTheme.primary },
+  alertDestructiveButton: { backgroundColor: stylesTheme.amber },
+  alertCancelText: { fontSize: 13, fontWeight: "600", color: stylesTheme.ink },
+  alertConfirmText: { fontSize: 13, fontWeight: "700", color: "#FFFFFF" },
+})
 export default BudgetDetailScreen;

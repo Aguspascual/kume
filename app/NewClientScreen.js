@@ -1,31 +1,33 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useMemo } from "react"
 import {
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   View,
   Text,
   TextInput,
   TouchableOpacity,
-  Alert,
   KeyboardAvoidingView,
   TouchableWithoutFeedback,
   Keyboard,
   Platform,
 } from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
+import { SafeAreaView as SafeAreaContainer } from "react-native-safe-area-context"
+import AsyncStorage from "../lib/backendStorage"
 import { useRouter, useLocalSearchParams } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import * as Contacts from "expo-contacts"
 import { FlatList, Modal } from "react-native"
 
 const NewClientScreen = () => {
+  const params = useLocalSearchParams()
+  const fromContact = params.fromContact === "true"
+
   // Estados para almacenar los datos del formulario
-  const [nombre, setNombre] = useState("")
-  const [apellido, setApellido] = useState("")
-  const [telefono, setTelefono] = useState("")
+  const [nombre, setNombre] = useState(fromContact ? params.nombre ?? "" : "")
+  const [apellido, setApellido] = useState(fromContact ? params.apellido ?? "" : "")
+  const [telefono, setTelefono] = useState(fromContact ? params.telefono ?? "" : "")
   const [domicilio, setDomicilio] = useState("")
 
   // Estado para la alerta personalizada
@@ -59,24 +61,19 @@ const NewClientScreen = () => {
 
   // Se usa useRouter para la navegación en Expo Router
   const router = useRouter()
-  const params = useLocalSearchParams()
+  const goBack = () => (router.canGoBack() ? router.back() : router.replace("/"))
 
   const [contacts, setContacts] = useState([])
   const [showContactsModal, setShowContactsModal] = useState(false)
-  const [filteredContacts, setFilteredContacts] = useState([])
   const [contactSearchText, setContactSearchText] = useState("")
 
-  useEffect(() => {
-    if (contactSearchText === "") {
-      setFilteredContacts(contacts)
-    } else {
-      const filtered = contacts.filter(
-        (contact) =>
-          contact.name.toLowerCase().includes(contactSearchText.toLowerCase()) ||
-          (contact.phoneNumbers && contact.phoneNumbers.some((phone) => phone.number.includes(contactSearchText))),
-      )
-      setFilteredContacts(filtered)
-    }
+  const filteredContacts = useMemo(() => {
+    const normalizedSearch = contactSearchText.toLowerCase()
+    return contacts.filter(
+      (contact) =>
+        contact.name.toLowerCase().includes(normalizedSearch) ||
+        (contact.phoneNumbers && contact.phoneNumbers.some((phone) => phone.number.includes(contactSearchText))),
+    )
   }, [contactSearchText, contacts])
 
   const importContacts = async () => {
@@ -92,7 +89,6 @@ const NewClientScreen = () => {
             (contact) => contact.name && contact.phoneNumbers && contact.phoneNumbers.length > 0,
           )
           setContacts(validContacts)
-          setFilteredContacts(validContacts)
           setShowContactsModal(true)
         } else {
           showCustomAlert("Sin contactos", "No se encontraron contactos en el dispositivo.")
@@ -129,28 +125,20 @@ const NewClientScreen = () => {
 
   const renderContactItem = ({ item }) => (
     <TouchableOpacity style={styles.contactItem} onPress={() => selectContact(item)}>
-      <Ionicons name="person-outline" size={24} color="#003366" />
+      <Ionicons name="person-outline" size={22} color="#00685F" />
       <View style={styles.contactInfo}>
         <Text style={styles.contactName}>{item.name}</Text>
         <Text style={styles.contactPhone}>{item.phoneNumbers[0]?.number || "Sin teléfono"}</Text>
       </View>
-      <Ionicons name="add-circle-outline" size={20} color="#2196F3" />
+      <Ionicons name="add-circle-outline" size={20} color="#00685F" />
     </TouchableOpacity>
   )
 
-  useEffect(() => {
-    if (params.fromContact === "true") {
-      if (params.nombre) setNombre(params.nombre)
-      if (params.apellido) setApellido(params.apellido)
-      if (params.telefono) setTelefono(params.telefono)
-    }
-  }, [params])
-
   // Función para guardar el nuevo cliente
   const handleSaveClient = async () => {
-    // Validar que todos los campos obligatorios estén llenos
-    if (!nombre || !apellido || !telefono || !domicilio) {
-      showCustomAlert("Error", "Todos los campos son obligatorios.")
+    // Nombre y teléfono son los datos obligatorios de la ficha.
+    if (!nombre.trim() || !telefono.trim()) {
+      showCustomAlert("Error", "El nombre y el teléfono son obligatorios.")
       return
     }
 
@@ -164,10 +152,10 @@ const NewClientScreen = () => {
       // Crear el objeto del nuevo cliente
       const newClient = {
         id: Date.now().toString(),
-        nombre,
-        apellido,
+        nombre: nombre.trim(),
+        apellido: apellido.trim(),
         telefono: telefonoFormateado,
-        domicilio,
+        domicilio: domicilio.trim(),
       }
 
       // Obtener clientes existentes, agregar el nuevo y guardar
@@ -186,7 +174,7 @@ const NewClientScreen = () => {
           setTelefono("")
           setDomicilio("")
           // Redirigir a la pantalla de inicio usando Expo Router
-          router.replace("/")
+          goBack()
         }
       })
     } catch (error) {
@@ -196,97 +184,101 @@ const NewClientScreen = () => {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaContainer style={styles.container} edges={["top", "left", "right", "bottom"]}>
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+        keyboardVerticalOffset={0}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
           <View style={styles.innerContainer}>
             <View style={styles.header}>
-              {/* Se usa router.replace para navegar a la ruta raíz ('/') */}
-              <TouchableOpacity onPress={() => router.replace("/")} style={styles.backButton}>
-                <Ionicons name="home-outline" size={28} color="#fff" />
+              <TouchableOpacity onPress={goBack} style={styles.backButton} accessibilityLabel="Volver">
+                <Ionicons name="arrow-back" size={21} color="#183D38" />
               </TouchableOpacity>
-              <Text style={styles.title}>Nuevo Cliente</Text>
+              <View style={styles.headerCopy}>
+                <Text style={styles.title}>Agregar cliente</Text>
+                <Text style={styles.headerSubtitle}>Guardá sus datos para tus próximos trabajos</Text>
+              </View>
             </View>
+            <View style={styles.headerDivider} />
 
             <ScrollView
               contentContainerStyle={styles.scrollContent}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
-              bounces={false}
+              contentInsetAdjustmentBehavior="never"
             >
-              <View style={styles.formContainer}>
-                <TouchableOpacity style={styles.importContactsButton} onPress={importContacts}>
-                  <Ionicons name="phone-portrait-outline" size={24} color="#fff" />
-                  <Text style={styles.importContactsButtonText}>Importar desde Contactos</Text>
-                </TouchableOpacity>
+              <View>
+                <View style={styles.importCard}>
+                  <View style={styles.importIcon}><Ionicons name="people-outline" size={20} color="#246B5C" /></View>
+                  <View style={styles.importCopy}>
+                    <Text style={styles.importTitle}>Importar desde contactos</Text>
+                    <Text style={styles.importDescription}>Cargar nombre y teléfono automáticamente</Text>
+                  </View>
+                  <TouchableOpacity style={styles.importButton} onPress={importContacts} accessibilityLabel="Importar contactos">
+                    <Text style={styles.importButtonText}>Importar</Text>
+                  </TouchableOpacity>
+                </View>
 
-                <Text style={styles.label}>Nombre</Text>
-                <TextInput
-                  style={styles.input}
-                  value={nombre}
-                  onChangeText={setNombre}
-                  placeholder="Ej: Juan"
-                  placeholderTextColor="#999"
-                  returnKeyType="next"
-                />
+                {fromContact && <View style={styles.importedNotice}><Ionicons name="checkmark-circle" size={17} color="#397263" /><Text style={styles.importedNoticeText}>Datos importados del contacto. Podés editarlos.</Text></View>}
 
-                <Text style={styles.label}>Apellido</Text>
-                <TextInput
-                  style={styles.input}
-                  value={apellido}
-                  onChangeText={setApellido}
-                  placeholder="Ej: Pérez"
-                  placeholderTextColor="#999"
-                  returnKeyType="next"
-                />
+                <View style={styles.formCard}>
+                  <View style={styles.cardHeading}>
+                    <Ionicons name="person-outline" size={20} color="#00685F" />
+                    <Text style={styles.cardTitle}>Información personal</Text>
+                  </View>
+                  <Text style={styles.label}>Nombre <Text style={styles.required}>*</Text></Text>
+                  <View style={styles.inputWrap}>
+                    <Ionicons name="id-card-outline" size={19} color="#7B8982" />
+                    <TextInput style={styles.input} value={nombre} onChangeText={setNombre} placeholder="Ej.: Juan" placeholderTextColor="#89968F" returnKeyType="next" autoCapitalize="words" />
+                  </View>
+                  <Text style={styles.label}>Apellido</Text>
+                  <TextInput style={styles.standaloneInput} value={apellido} onChangeText={setApellido} placeholder="Ej.: Pérez" placeholderTextColor="#89968F" returnKeyType="next" autoCapitalize="words" />
+                </View>
 
-                <Text style={styles.label}>Teléfono</Text>
-                <TextInput
-                  style={styles.input}
-                  value={telefono}
-                  onChangeText={setTelefono}
-                  keyboardType="phone-pad"
-                  placeholder="Ej: 2396-123456"
-                  placeholderTextColor="#999"
-                  returnKeyType="next"
-                />
-
-                <Text style={styles.label}>Domicilio</Text>
-                <TextInput
-                  style={styles.input}
-                  value={domicilio}
-                  onChangeText={setDomicilio}
-                  placeholder="Ej: Av. Balcarce 123"
-                  placeholderTextColor="#999"
-                  returnKeyType="done"
-                  onSubmitEditing={Keyboard.dismiss}
-                />
-
-                <TouchableOpacity style={styles.saveButton} onPress={handleSaveClient}>
-                  <Text style={styles.saveButtonText}>Guardar Cliente</Text>
-                </TouchableOpacity>
+                <View style={styles.formCard}>
+                  <View style={styles.cardHeading}>
+                    <Ionicons name="people-outline" size={20} color="#00685F" />
+                    <Text style={styles.cardTitle}>Contacto</Text>
+                  </View>
+                  <Text style={styles.label}>Teléfono <Text style={styles.required}>*</Text></Text>
+                  <View style={styles.inputWrap}>
+                    <Ionicons name="call-outline" size={19} color="#7B8982" />
+                    <TextInput style={styles.input} value={telefono} onChangeText={setTelefono} keyboardType="phone-pad" placeholder="Ej.: 2396 123456" placeholderTextColor="#89968F" returnKeyType="next" />
+                  </View>
+                  <Text style={styles.phoneHint}>Código de área sin 0 y número sin 15</Text>
+                  <Text style={styles.label}>Domicilio</Text>
+                  <View style={[styles.inputWrap, styles.lastInputWrap]}>
+                    <Ionicons name="location-outline" size={19} color="#7B8982" />
+                    <TextInput style={styles.input} value={domicilio} onChangeText={setDomicilio} placeholder="Ej.: Av. Balcarce 123" placeholderTextColor="#89968F" returnKeyType="done" onSubmitEditing={Keyboard.dismiss} />
+                  </View>
+                </View>
+                <View style={styles.privacyNote}><Ionicons name="lock-closed-outline" size={15} color="#6D7A77" /><Text style={styles.privacyNoteText}>Los datos se guardan en tu dispositivo</Text></View>
               </View>
             </ScrollView>
+            <View style={styles.footer}>
+              <TouchableOpacity style={styles.saveButton} onPress={handleSaveClient}>
+                <Ionicons name="checkmark-circle-outline" size={20} color="#FFF" />
+                <Text style={styles.saveButtonText}>Guardar cliente</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
 
       <Modal visible={showContactsModal} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView style={styles.modalContainer}>
+        <SafeAreaContainer style={styles.modalContainer} edges={["top", "left", "right", "bottom"]}>
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => setShowContactsModal(false)} style={styles.closeButton}>
-              <Ionicons name="close-outline" size={28} color="#FFF" />
+              <Ionicons name="close-outline" size={26} color="#1A1C1A" />
             </TouchableOpacity>
             <Text style={styles.modalTitle}>Seleccionar Contacto</Text>
           </View>
 
           <View style={styles.modalContent}>
             <View style={styles.searchContainer}>
-              <Ionicons name="search-outline" size={20} color="#003366" style={styles.searchIcon} />
+              <Ionicons name="search-outline" size={20} color="#00685F" style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
                 value={contactSearchText}
@@ -304,7 +296,7 @@ const NewClientScreen = () => {
               style={styles.contactsList}
             />
           </View>
-        </SafeAreaView>
+        </SafeAreaContainer>
       </Modal>
 
       {/* Custom Alert Modal */}
@@ -312,6 +304,8 @@ const NewClientScreen = () => {
           transparent={true}
           visible={alertConfig.visible}
           animationType="fade"
+          statusBarTranslucent
+          navigationBarTranslucent
           onRequestClose={hideCustomAlert}
       >
           <View style={styles.alertOverlay}>
@@ -341,259 +335,69 @@ const NewClientScreen = () => {
               </View>
           </View>
       </Modal>
-    </SafeAreaView>
+    </SafeAreaContainer>
   )
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#2F4550",
-  },
-  keyboardAvoidingView: {
-    flex: 1,
-  },
-  innerContainer: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 20,
-  },
-  header: {
-    paddingTop: 50,
-    paddingBottom: 30,
-    backgroundColor: "#2F4550",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-  backButton: {
-    position: "absolute",
-    left: 20,
-    paddingTop: 22,
-    paddingLeft: 10,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#fff",
-  },
-  formContainer: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 30,
-    paddingTop: 40,
-    marginTop: -20,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#003366",
-    marginBottom: 5,
-  },
-  input: {
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    padding: 15,
-    fontSize: 16,
-    marginBottom: 20,
-    color: "#333",
-  },
-  saveButton: {
-    backgroundColor: "#2196F3",
-    padding: 18,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  saveButtonText: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  importContactsButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#4CAF50",
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  importContactsButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: "#FFEB3B",
-  },
-  modalHeader: {
-    padding: 20,
-    backgroundColor: "#2F4550",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-  closeButton: {
-    position: "absolute",
-    left: 20,
-    top: 25,
-    color: "#FFF",
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#FFF",
-    marginBottom: 30,
-  },
-  modalContent: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 20,
-    paddingTop: 30,
-    marginTop: -20,
-  },
-  searchContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    marginBottom: 20,
-  },
-  searchIcon: {
-    marginRight: 10,
-  },
-  searchInput: {
-    flex: 1,
-    paddingVertical: 15,
-    fontSize: 16,
-    color: "#333",
-  },
-  contactsList: {
-    flex: 1,
-  },
-  contactItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f9f9f9",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  contactInfo: {
-    flex: 1,
-    marginLeft: 15,
-  },
-  contactName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  contactPhone: {
-    fontSize: 14,
-    color: "#666",
-    marginTop: 2,
-  },
-  emptyListText: {
-    textAlign: "center",
-    marginTop: 50,
-    fontSize: 16,
-    color: "#999",
-  },
-  // Custom Alert Styles
-  alertOverlay: {
-      flex: 1,
-      backgroundColor: "rgba(0, 0, 0, 0.5)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 20,
-  },
-  alertBox: {
-      backgroundColor: "#FFF",
-      borderRadius: 15,
-      padding: 20,
-      width: "90%",
-      maxWidth: 400,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 10,
-      elevation: 5,
-  },
-  alertTitle: {
-      fontSize: 18,
-      fontWeight: "bold",
-      color: "#2F4550",
-      marginBottom: 10,
-      textAlign: "center",
-  },
-  alertMessage: {
-      fontSize: 15,
-      color: "#555",
-      marginBottom: 20,
-      textAlign: "center",
-      lineHeight: 22,
-  },
-  alertButtons: {
-      flexDirection: "row",
-      justifyContent: "space-around",
-      gap: 10,
-  },
-  alertButton: {
-      flex: 1,
-      paddingVertical: 12,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-  },
-  alertCancelButton: {
-      backgroundColor: "#F5F7FA",
-      borderWidth: 1,
-      borderColor: "#E1E5EA",
-  },
-  alertConfirmButton: {
-      backgroundColor: "#2196F3",
-  },
-  alertDestructiveButton: {
-      backgroundColor: "#F44336",
-  },
-  alertCancelText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#555",
-  },
-  alertConfirmText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#FFF",
-  },
+  container: { flex: 1, backgroundColor: "#FAF9F6" },
+  keyboardAvoidingView: { flex: 1 },
+  innerContainer: { flex: 1 },
+  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingTop: 7, paddingBottom: 9, gap: 11 },
+  headerDivider: { height: 1, backgroundColor: "#EAE7E1" },
+  backButton: { width: 42, height: 42, borderRadius: 14, backgroundColor: "#E9EEE7", alignItems: "center", justifyContent: "center", marginRight: 13 },
+  headerCopy: { flex: 1, minWidth: 0 },
+  title: { fontSize: 17, fontWeight: "700", color: "#1A1C1A", letterSpacing: -0.15 },
+  headerSubtitle: { color: "#3D4947", fontSize: 11, marginTop: 2 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 13, paddingBottom: 116 },
+  importCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#FFFFFF", borderRadius: 16, borderWidth: 1, borderColor: "#EAE7E1", padding: 13, marginBottom: 13, shadowColor: "#0F172A", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  importIcon: { width: 36, height: 36, borderRadius: 9, backgroundColor: "#EFEEEB", alignItems: "center", justifyContent: "center", marginRight: 10 },
+  importCopy: { flex: 1 },
+  importTitle: { color: "#1A1C1A", fontSize: 12, fontWeight: "700" },
+  importDescription: { color: "#3D4947", fontSize: 10, lineHeight: 14, marginTop: 3 },
+  importButton: { minHeight: 34, borderRadius: 8, borderWidth: 1, borderColor: "#00685F", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center", paddingHorizontal: 11, marginLeft: 7 },
+  importButtonText: { fontSize: 11, color: "#00685F", fontWeight: "700" },
+  importedNotice: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 3, paddingBottom: 13 },
+  importedNoticeText: { color: "#397263", fontSize: 11, fontWeight: "600" },
+  formCard: { backgroundColor: "#FFFFFF", borderRadius: 16, borderWidth: 1, borderColor: "#EAE7E1", padding: 16, marginBottom: 13, shadowColor: "#0F172A", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.035, shadowRadius: 3, elevation: 1 },
+  cardHeading: { flexDirection: "row", alignItems: "center", marginBottom: 13, gap: 9, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: "#EFEEEB" },
+  cardTitle: { color: "#1A1C1A", fontSize: 15, fontWeight: "700" },
+  label: { color: "#3D4947", fontSize: 11, fontWeight: "700", marginBottom: 6, marginTop: 1 },
+  required: { color: "#00685F", fontWeight: "800" },
+  inputWrap: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: "#FFFFFF", borderRadius: 8, borderWidth: 1, borderColor: "#D9DFDC", paddingHorizontal: 12, marginBottom: 13 },
+  input: { minHeight: 44, flex: 1, backgroundColor: "#FFFFFF", borderRadius: 8, paddingHorizontal: 0, paddingVertical: 0, fontSize: 14, color: "#1A1C1A" },
+  standaloneInput: { height: 44, backgroundColor: "#FFFFFF", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 0, fontSize: 14, color: "#1A1C1A", marginBottom: 13, borderWidth: 1, borderColor: "#D9DFDC" },
+  lastInputWrap: { marginBottom: 0 },
+  phoneHint: { color: "#5E6A66", fontSize: 10, marginTop: -7, marginBottom: 13, paddingLeft: 2 },
+  privacyNote: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, paddingVertical: 5 },
+  privacyNoteText: { color: "#3D4947", fontSize: 11 },
+  footer: { paddingHorizontal: 16, paddingTop: 11, paddingBottom: Platform.OS === "ios" ? 8 : 12, backgroundColor: "rgba(250,249,246,0.98)", borderTopWidth: 1, borderTopColor: "#EAE7E1" },
+  saveButton: { minHeight: 48, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 9, backgroundColor: "#0D9488", paddingHorizontal: 18, borderRadius: 8, shadowColor: "#0F172A", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2 },
+  saveButtonText: { color: "#FFF", fontSize: 16, fontWeight: "700" },
+  modalContainer: { flex: 1, backgroundColor: "#FAF9F6" },
+  modalHeader: { paddingHorizontal: 20, paddingVertical: 16, backgroundColor: "#FAF9F6", flexDirection: "row", alignItems: "center", justifyContent: "center", position: "relative" },
+  closeButton: { position: "absolute", left: 18, width: 38, height: 38, borderRadius: 8, backgroundColor: "#EFEEEB", alignItems: "center", justifyContent: "center" },
+  modalTitle: { fontSize: 17, fontWeight: "800", color: "#1A1C1A" },
+  modalContent: { flex: 1, backgroundColor: "#FFFFFF", borderTopLeftRadius: 23, borderTopRightRadius: 23, padding: 18, paddingTop: 21 },
+  searchContainer: { flexDirection: "row", alignItems: "center", backgroundColor: "#F7F9F6", borderRadius: 13, paddingHorizontal: 13, marginBottom: 15, borderWidth: 1, borderColor: "#E6EAE4" },
+  searchIcon: { marginRight: 9 },
+  searchInput: { flex: 1, paddingVertical: 12, fontSize: 14, color: "#1F4039" },
+  contactsList: { flex: 1 },
+  contactItem: { flexDirection: "row", alignItems: "center", backgroundColor: "#FFFFFF", padding: 13, borderRadius: 14, marginBottom: 9, borderWidth: 1, borderColor: "#E9EDE7" },
+  contactInfo: { flex: 1, marginLeft: 12 },
+  contactName: { fontSize: 14, fontWeight: "700", color: "#294A41" },
+  contactPhone: { fontSize: 12, color: "#75847C", marginTop: 3 },
+  emptyListText: { textAlign: "center", marginTop: 40, fontSize: 13, color: "#89968F" },
+  alertOverlay: { flex: 1, backgroundColor: "rgba(18, 40, 35, 0.5)", justifyContent: "center", alignItems: "center", padding: 20 },
+  alertBox: { backgroundColor: "#FFF", borderRadius: 18, padding: 21, width: "90%", maxWidth: 400, elevation: 5 },
+  alertTitle: { fontSize: 17, fontWeight: "800", color: "#1A3D37", marginBottom: 9, textAlign: "center" },
+  alertMessage: { fontSize: 14, color: "#64736B", marginBottom: 18, textAlign: "center", lineHeight: 21 },
+  alertButtons: { flexDirection: "row", justifyContent: "space-around", gap: 9 },
+  alertButton: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  alertCancelButton: { backgroundColor: "#F5F7F2", borderWidth: 1, borderColor: "#E6EAE4" },
+  alertConfirmButton: { backgroundColor: "#216454" },
+  alertDestructiveButton: { backgroundColor: "#A64238" },
+  alertCancelText: { fontSize: 14, fontWeight: "700", color: "#52645B" },
+  alertConfirmText: { fontSize: 14, fontWeight: "700", color: "#FFF" },
 })
-
 export default NewClientScreen

@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN contact_phone TEXT NOT NULL DEFAULT '';

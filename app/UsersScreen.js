@@ -1,117 +1,99 @@
 "use client"
 
 import { Ionicons } from "@expo/vector-icons"
-import AsyncStorage from "@react-native-async-storage/async-storage"
+import AsyncStorage from "../lib/backendStorage"
 import * as Contacts from "expo-contacts"
 import { useFocusEffect, useRouter } from "expo-router"
-import { useCallback, useEffect, useState } from "react"
-import { Alert, FlatList, Modal, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native"
+import { useCallback, useMemo, useState } from "react"
+import { FlatList, Modal, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native"
+import { SafeAreaView } from "react-native-safe-area-context"
+import { useAuth } from "../lib/auth"
+
+const COLORS = {
+  canvas: "#F8F7F4",
+  surface: "#FFFFFF",
+  surfaceSoft: "#F1EFEA",
+  line: "#EAE7E1",
+  ink: "#172321",
+  muted: "#64716E",
+  teal: "#0D9488",
+  tealSoft: "#E7F5F2",
+  red: "#BA1A1A",
+}
+
+const avatarColors = [
+  { backgroundColor: "#DDF4EF", color: "#08766D" },
+  { backgroundColor: "#FAE8E0", color: "#A0471D" },
+  { backgroundColor: "#E3EEDD", color: "#3E6B35" },
+  { backgroundColor: "#FCF2D9", color: "#9C6A08" },
+  { backgroundColor: "#E8EAF5", color: "#545C72" },
+]
+
+const getInitials = (user) => `${user?.nombre?.trim()?.[0] || ""}${user?.apellido?.trim()?.[0] || ""}`.toUpperCase() || "?"
 
 const UsersScreen = () => {
   const [users, setUsers] = useState([])
-  const [filteredUsers, setFilteredUsers] = useState([])
   const [searchText, setSearchText] = useState("")
   const [contacts, setContacts] = useState([])
   const [showContactsModal, setShowContactsModal] = useState(false)
-  const [filteredContacts, setFilteredContacts] = useState([])
   const [contactSearchText, setContactSearchText] = useState("")
-
-  // Estado para la alerta personalizada
-  const [alertConfig, setAlertConfig] = useState({
-      visible: false,
-      title: "",
-      message: "",
-      onConfirm: null,
-      onCancel: null,
-      confirmText: "Aceptar",
-      cancelText: null,
-      destructive: false
-  })
-
-  // Función auxiliar para mostrar alertas personalizadas
-  const showCustomAlert = (title, message, options = {}) => {
-      setAlertConfig({
-          visible: true,
-          title,
-          message,
-          onConfirm: options.onConfirm || (() => setAlertConfig(prev => ({ ...prev, visible: false }))),
-          onCancel: options.onCancel || null,
-          confirmText: options.confirmText || "Aceptar",
-          cancelText: options.cancelText || null,
-          destructive: options.destructive || false
-      })
-  }
-  const hideCustomAlert = () => {
-      setAlertConfig(prev => ({ ...prev, visible: false }))
-  }
-
+  const [alertConfig, setAlertConfig] = useState({ visible: false, title: "", message: "", onConfirm: null, onCancel: null, confirmText: "Aceptar", cancelText: null, destructive: false })
   const router = useRouter()
+  const { syncStatus } = useAuth()
+
+  const showCustomAlert = (title, message, options = {}) => {
+    setAlertConfig({
+      visible: true,
+      title,
+      message,
+      onConfirm: options.onConfirm || (() => setAlertConfig((previous) => ({ ...previous, visible: false }))),
+      onCancel: options.onCancel || null,
+      confirmText: options.confirmText || "Aceptar",
+      cancelText: options.cancelText || null,
+      destructive: options.destructive || false,
+    })
+  }
+
+  const hideCustomAlert = () => setAlertConfig((previous) => ({ ...previous, visible: false }))
 
   const fetchUsers = async () => {
     try {
       const usersJSON = await AsyncStorage.getItem("clientes")
-      const usersArray = usersJSON ? JSON.parse(usersJSON) : []
-      setUsers(usersArray)
-      setFilteredUsers(usersArray)
+      setUsers(usersJSON ? JSON.parse(usersJSON) : [])
     } catch (error) {
       console.error("Error al cargar los usuarios:", error)
       showCustomAlert("Error", "No se pudieron cargar los usuarios.")
     }
   }
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchUsers()
-    }, []),
-  )
+  useFocusEffect(useCallback(() => { fetchUsers() }, []))
 
-  useEffect(() => {
-    if (searchText === "") {
-      setFilteredUsers(users)
-    } else {
-      const filtered = users.filter(
-        (user) =>
-          user.nombre.toLowerCase().includes(searchText.toLowerCase()) ||
-          user.apellido.toLowerCase().includes(searchText.toLowerCase()),
-      )
-      setFilteredUsers(filtered)
-    }
+  const filteredUsers = useMemo(() => {
+    const query = searchText.trim().toLocaleLowerCase("es-AR")
+    return users.filter((user) => !query || `${user.nombre || ""} ${user.apellido || ""} ${user.telefono || ""}`.toLocaleLowerCase("es-AR").includes(query))
   }, [searchText, users])
 
-  useEffect(() => {
-    if (contactSearchText === "") {
-      setFilteredContacts(contacts)
-    } else {
-      const filtered = contacts.filter(
-        (contact) =>
-          contact.name.toLowerCase().includes(contactSearchText.toLowerCase()) ||
-          (contact.phoneNumbers && contact.phoneNumbers.some((phone) => phone.number.includes(contactSearchText))),
-      )
-      setFilteredContacts(filtered)
-    }
+  const filteredContacts = useMemo(() => {
+    const query = contactSearchText.trim().toLocaleLowerCase("es-AR")
+    return contacts.filter((contact) => `${contact.name || ""} ${(contact.phoneNumbers || []).map((phone) => phone.number || "").join(" ")}`.toLocaleLowerCase("es-AR").includes(query))
   }, [contactSearchText, contacts])
 
   const importContacts = async () => {
     try {
       const { status } = await Contacts.requestPermissionsAsync()
-      if (status === "granted") {
-        const { data } = await Contacts.getContactsAsync({
-          fields: [Contacts.Fields.Name, Contacts.Fields.PhoneNumbers],
-        })
-
-        if (data.length > 0) {
-          const validContacts = data.filter(
-            (contact) => contact.name && contact.phoneNumbers && contact.phoneNumbers.length > 0,
-          )
-          setContacts(validContacts)
-          setFilteredContacts(validContacts)
-          setShowContactsModal(true)
-        } else {
-          showCustomAlert("Sin contactos", "No se encontraron contactos en el dispositivo.")
-        }
-      } else {
+      if (status !== "granted") {
         showCustomAlert("Permisos denegados", "Se necesitan permisos para acceder a los contactos.")
+        return
       }
+      const { data } = await Contacts.getContactsAsync({ fields: [Contacts.Fields.Name, Contacts.Fields.PhoneNumbers] })
+      const validContacts = data.filter((contact) => contact.name && contact.phoneNumbers?.length)
+      if (!validContacts.length) {
+        showCustomAlert("Sin contactos", "No se encontraron contactos con teléfono en el dispositivo.")
+        return
+      }
+      setContacts(validContacts)
+      setContactSearchText("")
+      setShowContactsModal(true)
     } catch (error) {
       console.error("Error al importar contactos:", error)
       showCustomAlert("Error", "No se pudieron importar los contactos.")
@@ -119,484 +101,232 @@ const UsersScreen = () => {
   }
 
   const selectContact = (contact) => {
-    const fullName = contact.name || contact.displayName || ""
-    const nameParts = fullName.split(" ")
-    const firstName = nameParts[0] || ""
-    const lastName = nameParts.slice(1).join(" ") || ""
-
-    let phoneNumber = ""
-    if (contact.phoneNumbers && contact.phoneNumbers.length > 0) {
-      phoneNumber = contact.phoneNumbers[0].number || ""
-      phoneNumber = phoneNumber.replace(/[\s\-\(\)]/g, "")
-      if (!phoneNumber.startsWith("+54") && !phoneNumber.startsWith("+")) {
-        phoneNumber = "+54" + phoneNumber
-      }
-    }
-
-    router.push({
-      pathname: "/NewClientScreen",
-      params: {
-        fromContact: "true",
-        nombre: firstName,
-        apellido: lastName,
-        telefono: phoneNumber,
-      },
-    })
+    const [nombre = "", ...rest] = (contact.name || "").trim().split(/\s+/)
+    let telefono = (contact.phoneNumbers?.[0]?.number || "").replace(/[\s\-()]/g, "")
+    if (telefono && !telefono.startsWith("+")) telefono = `+54${telefono}`
+    setShowContactsModal(false)
+    router.push({ pathname: "/NewClientScreen", params: { fromContact: "true", nombre, apellido: rest.join(" "), telefono } })
   }
 
   const deleteUser = async (userId) => {
     try {
       const usersJSON = await AsyncStorage.getItem("clientes")
-      const usersArray = usersJSON ? JSON.parse(usersJSON) : []
-
-      const updatedUsers = usersArray.filter((user) => user.id !== userId)
-
+      const updatedUsers = (usersJSON ? JSON.parse(usersJSON) : []).filter((user) => user.id !== userId)
       await AsyncStorage.setItem("clientes", JSON.stringify(updatedUsers))
       setUsers(updatedUsers)
-      setFilteredUsers(updatedUsers)
-
-      showCustomAlert("Eliminado", "El cliente ha sido eliminado correctamente.")
+      showCustomAlert("Eliminado", "El cliente se eliminó correctamente.")
     } catch (error) {
       console.error("Error al eliminar el cliente:", error)
       showCustomAlert("Error", "No se pudo eliminar el cliente.")
     }
   }
 
-  const confirmDelete = (user) => {
-    showCustomAlert(
-      "Confirmar Eliminación",
-      `¿Estás seguro de que quieres eliminar a ${user.nombre} ${user.apellido}?`,
-      {
-        cancelText: "Cancelar",
-        confirmText: "Eliminar",
-        destructive: true,
-        onCancel: hideCustomAlert,
-        onConfirm: () => {
-          hideCustomAlert()
-          deleteUser(user.id)
-        }
-      }
-    )
-  }
+  const confirmDelete = (user) => showCustomAlert(
+    "Eliminar usuario",
+    `¿Querés eliminar a ${user.nombre || ""} ${user.apellido || ""}?`,
+    {
+      cancelText: "Cancelar",
+      confirmText: "Eliminar",
+      destructive: true,
+      onCancel: hideCustomAlert,
+      onConfirm: () => { hideCustomAlert(); deleteUser(user.id) },
+    },
+  )
 
-  const renderUserItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.userItem}
-      onPress={() => {
-        router.push({
-          pathname: "ClientDetailScreen",
-          params: { cliente: JSON.stringify(item) },
-        })
-      }}
-    >
-      <Ionicons name="person-circle-outline" size={30} color="#003366" />
-      <View style={styles.userInfo}>
-        <Text style={styles.userName}>
-          {item.nombre} {item.apellido}
-        </Text>
-        <Text style={styles.userPhone}>{item.telefono}</Text>
+  const openUser = (user) => router.push({ pathname: "ClientDetailScreen", params: { cliente: JSON.stringify(user) } })
+  const syncNote = syncStatus.state === "synced"
+    ? "Clientes sincronizados con el servidor."
+    : syncStatus.state === "syncing"
+      ? "Sincronizando clientes con el servidor…"
+      : syncStatus.state === "pending" || syncStatus.state === "offline"
+        ? "Cambios guardados en el dispositivo, pendientes de sincronización."
+        : "Los clientes se guardan en el dispositivo y se sincronizan con el servidor."
+  const syncIcon = syncStatus.state === "synced" ? "cloud-done-outline" : syncStatus.state === "syncing" ? "sync-outline" : "cloud-offline-outline"
+
+  const renderUserItem = ({ item, index }) => (
+    <TouchableOpacity activeOpacity={0.82} style={styles.userCard} onPress={() => openUser(item)}>
+      <View style={styles.userTopRow}>
+        <View style={[styles.avatar, avatarColors[index % avatarColors.length]]}>
+          <Text style={[styles.avatarText, { color: avatarColors[index % avatarColors.length].color }]}>{getInitials(item)}</Text>
+        </View>
+        <View style={styles.userInfo}>
+          <Text style={styles.userName} numberOfLines={1}>{`${item.nombre || ""} ${item.apellido || ""}`.trim() || "Usuario sin nombre"}</Text>
+          <View style={styles.phoneLine}>
+            <Ionicons name="call-outline" size={14} color={COLORS.muted} />
+            <Text style={styles.userPhone} numberOfLines={1}>{item.telefono || "Sin teléfono"}</Text>
+          </View>
+        </View>
+        <TouchableOpacity accessibilityLabel="Eliminar usuario" style={styles.moreButton} onPress={() => confirmDelete(item)}>
+          <Ionicons name="ellipsis-vertical" size={18} color={COLORS.muted} />
+        </TouchableOpacity>
       </View>
-      <TouchableOpacity
-        style={styles.deleteButton}
-        onPress={() => confirmDelete(item)}
-      >
-        <Ionicons name="trash-outline" size={24} color="#f44336" />
-      </TouchableOpacity>
+      <View style={styles.cardDivider} />
+      <View style={styles.userFooter}>
+        <View style={styles.tag}><Text style={styles.tagText}>Cliente</Text></View>
+        <Text style={styles.openDetail}>Ver ficha</Text>
+        <Ionicons name="chevron-forward" size={15} color={COLORS.teal} />
+      </View>
     </TouchableOpacity>
   )
 
   const renderContactItem = ({ item }) => (
     <TouchableOpacity style={styles.contactItem} onPress={() => selectContact(item)}>
-      <Ionicons name="person-outline" size={24} color="#003366" />
-      <View style={styles.contactInfo}>
-        <Text style={styles.contactName}>{item.name}</Text>
-        <Text style={styles.contactPhone}>{item.phoneNumbers[0]?.number || "Sin teléfono"}</Text>
+      <View style={[styles.avatar, styles.contactAvatar]}><Ionicons name="person-outline" size={21} color={COLORS.teal} /></View>
+      <View style={styles.userInfo}>
+        <Text style={styles.userName} numberOfLines={1}>{item.name}</Text>
+        <Text style={styles.userPhone}>{item.phoneNumbers?.[0]?.number || "Sin teléfono"}</Text>
       </View>
-      <Ionicons name="add-circle-outline" size={20} color="#2196F3" />
+      <Ionicons name="add-circle-outline" size={23} color={COLORS.teal} />
     </TouchableOpacity>
   )
 
   return (
     <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.canvas} />
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace("/")} style={styles.backButton}>
-          <Ionicons name="home-outline" size={28} color="#fff" />
+        <TouchableOpacity accessibilityLabel="Volver al inicio" onPress={() => router.replace("/")} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={21} color={COLORS.ink} />
         </TouchableOpacity>
-        <Text style={styles.title}>Usuarios</Text>
+        <Text style={styles.brand}>Clientes</Text>
+        <View style={styles.headerSpacer} />
       </View>
 
-      <View style={styles.formContainer}>
-        <View style={styles.searchContainer}>
-          <Ionicons name="search-outline" size={20} color="#003366" style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            value={searchText}
-            onChangeText={setSearchText}
-            placeholder="Buscar usuario"
-            placeholderTextColor="#999"
-          />
-        </View>
-
-        <View style={styles.buttonsContainer}>
-          <TouchableOpacity style={styles.newUserButton} onPress={() => router.push("NewClientScreen")}>
-            <Ionicons name="add-circle-outline" size={24} color="#fff" />
-            <Text style={styles.newUserButtonText}>Nuevo Usuario</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.importContactsButton} onPress={importContacts}>
-            <Ionicons name="phone-portrait-outline" size={24} color="#fff" />
-            <Text style={styles.importContactsButtonText}>Importar Contactos</Text>
-          </TouchableOpacity>
-        </View>
-
-        <FlatList
-          data={filteredUsers}
-          keyExtractor={(item) => item.id}
-          renderItem={renderUserItem}
-          ListEmptyComponent={() => <Text style={styles.emptyListText}>No hay usuarios registrados.</Text>}
-          style={styles.list}
-        />
-      </View>
-
-      <Modal visible={showContactsModal} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowContactsModal(false)} style={styles.closeButton}>
-              <Ionicons name="close-outline" size={28} color="#003366" />
-            </TouchableOpacity>
-            <Text style={styles.modalTitle}>Seleccionar Contacto</Text>
-          </View>
-
-          <View style={styles.modalContent}>
+      <FlatList
+        data={filteredUsers}
+        keyExtractor={(item, index) => String(item.id ?? index)}
+        renderItem={renderUserItem}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.listContent}
+        ListHeaderComponent={(
+          <View style={styles.contentHeader}>
             <View style={styles.searchContainer}>
-              <Ionicons name="search-outline" size={20} color="#003366" style={styles.searchIcon} />
+              <Ionicons name="search-outline" size={20} color={COLORS.muted} />
               <TextInput
                 style={styles.searchInput}
-                value={contactSearchText}
-                onChangeText={setContactSearchText}
-                placeholder="Buscar contacto"
-                placeholderTextColor="#999"
+                value={searchText}
+                onChangeText={setSearchText}
+                placeholder="Buscar por nombre o teléfono"
+                placeholderTextColor="#89938F"
+                returnKeyType="search"
+                autoCorrect={false}
               />
+              {!!searchText && <TouchableOpacity accessibilityLabel="Limpiar búsqueda" onPress={() => setSearchText("")}><Ionicons name="close-circle" size={19} color="#89938F" /></TouchableOpacity>}
             </View>
 
-            <FlatList
-              data={filteredContacts}
-              keyExtractor={(item) => item.id}
-              renderItem={renderContactItem}
-              ListEmptyComponent={() => <Text style={styles.emptyListText}>No se encontraron contactos.</Text>}
-              style={styles.contactsList}
-            />
+            <View style={styles.actionsRow}>
+              <TouchableOpacity style={styles.newUserButton} onPress={() => router.push("NewClientScreen")}>
+                <Ionicons name="person-add-outline" size={19} color="#fff" />
+                <Text style={styles.newUserButtonText}>Nuevo cliente</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.importButton} onPress={importContacts}>
+                <Ionicons name="people-outline" size={19} color={COLORS.teal} />
+                <Text style={styles.importButtonText}>Importar</Text>
+              </TouchableOpacity>
+            </View>
+
           </View>
+        )}
+        ListEmptyComponent={(
+          <View style={styles.emptyState}>
+            <View style={styles.emptyIcon}><Ionicons name={searchText ? "search-outline" : "people-outline"} size={26} color={COLORS.teal} /></View>
+            <Text style={styles.emptyTitle}>{searchText ? "No encontramos resultados" : "Todavía no hay clientes"}</Text>
+            <Text style={styles.emptyText}>{searchText ? "Probá con otro nombre o teléfono." : "Agregá un cliente o importá un contacto para empezar."}</Text>
+          </View>
+        )}
+        ListFooterComponent={filteredUsers.length ? (
+          <View style={styles.syncNote}>
+            <Ionicons name={syncIcon} size={17} color={COLORS.teal} />
+            <Text style={styles.syncText}>{syncNote}</Text>
+          </View>
+        ) : null}
+      />
+
+      <Modal visible={showContactsModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowContactsModal(false)}>
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity accessibilityLabel="Cerrar" onPress={() => setShowContactsModal(false)} style={styles.closeButton}><Ionicons name="close" size={24} color={COLORS.ink} /></TouchableOpacity>
+            <Text style={styles.modalTitle}>Importar contacto</Text>
+            <View style={styles.headerSpacer} />
+          </View>
+          <Text style={styles.modalDescription}>Elegí un contacto para cargar sus datos.</Text>
+          <View style={styles.searchContainer}>
+            <Ionicons name="search-outline" size={20} color={COLORS.muted} />
+            <TextInput style={styles.searchInput} value={contactSearchText} onChangeText={setContactSearchText} placeholder="Buscar contacto" placeholderTextColor="#89938F" />
+          </View>
+          <FlatList data={filteredContacts} keyExtractor={(item, index) => String(item.id ?? index)} renderItem={renderContactItem} contentContainerStyle={styles.contactList} ListEmptyComponent={<Text style={styles.emptyText}>No se encontraron contactos.</Text>} />
         </SafeAreaView>
       </Modal>
 
-      {/* Custom Alert Modal */}
-      <Modal
-          transparent={true}
-          visible={alertConfig.visible}
-          animationType="fade"
-          onRequestClose={hideCustomAlert}
-      >
-          <View style={styles.alertOverlay}>
-              <View style={styles.alertBox}>
-                  <Text style={styles.alertTitle}>{alertConfig.title}</Text>
-                  <Text style={styles.alertMessage}>{alertConfig.message}</Text>
-                  <View style={styles.alertButtons}>
-                      {alertConfig.onCancel && (
-                          <TouchableOpacity 
-                              style={[styles.alertButton, styles.alertCancelButton]} 
-                              onPress={alertConfig.onCancel}
-                          >
-                              <Text style={styles.alertCancelText}>{alertConfig.cancelText}</Text>
-                          </TouchableOpacity>
-                      )}
-                      <TouchableOpacity 
-                          style={[
-                              styles.alertButton, 
-                              styles.alertConfirmButton, 
-                              alertConfig.destructive && styles.alertDestructiveButton
-                          ]} 
-                          onPress={alertConfig.onConfirm}
-                      >
-                          <Text style={styles.alertConfirmText}>{alertConfig.confirmText}</Text>
-                      </TouchableOpacity>
-                  </View>
-              </View>
+      <Modal transparent visible={alertConfig.visible} animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={hideCustomAlert}>
+        <View style={styles.alertOverlay}>
+          <View style={styles.alertBox}>
+            <Text style={styles.alertTitle}>{alertConfig.title}</Text>
+            <Text style={styles.alertMessage}>{alertConfig.message}</Text>
+            <View style={styles.alertButtons}>
+              {alertConfig.onCancel && <TouchableOpacity style={[styles.alertButton, styles.alertCancelButton]} onPress={alertConfig.onCancel}><Text style={styles.alertCancelText}>{alertConfig.cancelText}</Text></TouchableOpacity>}
+              <TouchableOpacity style={[styles.alertButton, alertConfig.destructive ? styles.alertDestructiveButton : styles.alertConfirmButton]} onPress={alertConfig.onConfirm}><Text style={styles.alertConfirmText}>{alertConfig.confirmText}</Text></TouchableOpacity>
+            </View>
           </View>
+        </View>
       </Modal>
     </SafeAreaView>
   )
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#2F4550",
-    paddingTop: 10,
-  },
-  header: {
-    padding: 40,
-    backgroundColor: "#2F4550",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-  backButton: {
-    position: "absolute",
-    left: 30,
-    color: "#fff",
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#fff",
-  },
-  formContainer: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 20,
-    paddingTop: 30,
-    marginTop: -20,
-  },
-  searchContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    marginBottom: 20,
-  },
-  searchIcon: {
-    marginRight: 10,
-  },
-  searchInput: {
-    flex: 1,
-    paddingVertical: 15,
-    fontSize: 16,
-    color: "#333",
-  },
-  buttonsContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 20,
-    gap: 10,
-  },
-  newUserButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#2196F3",
-    padding: 18,
-    borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  newUserButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  importContactsButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#4CAF50",
-    padding: 18,
-    borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  importContactsButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  list: {
-    flex: 1,
-  },
-  userItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f9f9f9",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-    justifyContent: "space-between",
-  },
-  userInfo: {
-    flex: 1,
-    marginLeft: 15,
-  },
-  userName: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  userPhone: {
-    fontSize: 14,
-    color: "#666",
-    marginTop: 2,
-  },
-  deleteButton: {
-    padding: 8,
-    borderRadius: 20,
-    backgroundColor: "#fff",
-    marginLeft: 10,
-  },
-  emptyListText: {
-    textAlign: "center",
-    marginTop: 50,
-    fontSize: 16,
-    color: "#999",
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: "#FFEB3B",
-  },
-  modalHeader: {
-    padding: 20,
-    backgroundColor: "#2F4550",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-  closeButton: {
-    position: "absolute",
-    left: 20,
-    top: 25,
-    color: "#FFF",
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#FFF",
-    marginBottom: 30,
-  },
-  modalContent: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 20,
-    paddingTop: 30,
-    marginTop: -20,
-  },
-  contactsList: {
-    flex: 1,
-  },
-  contactItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f9f9f9",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  contactInfo: {
-    flex: 1,
-    marginLeft: 15,
-  },
-  contactName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  contactPhone: {
-    fontSize: 14,
-    color: "#666",
-    marginTop: 2,
-  },
-  // Custom Alert Styles
-  alertOverlay: {
-      flex: 1,
-      backgroundColor: "rgba(0, 0, 0, 0.5)",
-      justifyContent: "center",
-      alignItems: "center",
-      padding: 20,
-  },
-  alertBox: {
-      backgroundColor: "#FFF",
-      borderRadius: 15,
-      padding: 20,
-      width: "90%",
-      maxWidth: 400,
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 10,
-      elevation: 5,
-  },
-  alertTitle: {
-      fontSize: 18,
-      fontWeight: "bold",
-      color: "#2F4550",
-      marginBottom: 10,
-      textAlign: "center",
-  },
-  alertMessage: {
-      fontSize: 15,
-      color: "#555",
-      marginBottom: 20,
-      textAlign: "center",
-      lineHeight: 22,
-  },
-  alertButtons: {
-      flexDirection: "row",
-      justifyContent: "space-around",
-      gap: 10,
-  },
-  alertButton: {
-      flex: 1,
-      paddingVertical: 12,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-  },
-  alertCancelButton: {
-      backgroundColor: "#F5F7FA",
-      borderWidth: 1,
-      borderColor: "#E1E5EA",
-  },
-  alertConfirmButton: {
-      backgroundColor: "#2196F3",
-  },
-  alertDestructiveButton: {
-      backgroundColor: "#F44336",
-  },
-  alertCancelText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#555",
-  },
-  alertConfirmText: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: "#FFF",
-  },
+  container: { flex: 1, backgroundColor: COLORS.canvas },
+  header: { height: 56, flexDirection: "row", alignItems: "center", paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: COLORS.line },
+  backButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.surfaceSoft },
+  brand: { marginLeft: 10, fontSize: 17, fontWeight: "800", color: COLORS.ink, letterSpacing: 0.4 },
+  headerSpacer: { flex: 1 },
+  listContent: { paddingHorizontal: 16, paddingBottom: 28, flexGrow: 1 },
+  contentHeader: { paddingTop: 4, paddingBottom: 14 },
+  searchContainer: { height: 48, flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.line, borderRadius: 10, paddingHorizontal: 13 },
+  searchInput: { flex: 1, height: "100%", color: COLORS.ink, fontSize: 14 },
+  actionsRow: { flexDirection: "row", gap: 9, marginTop: 12 },
+  newUserButton: { flex: 1.35, height: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: COLORS.teal, borderRadius: 9 },
+  newUserButtonText: { fontSize: 13, fontWeight: "700", color: "#FFFFFF" },
+  importButton: { flex: 1, height: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.line, borderRadius: 9 },
+  importButtonText: { fontSize: 13, fontWeight: "600", color: COLORS.ink },
+  userCard: { backgroundColor: COLORS.surface, padding: 13, marginBottom: 10, borderRadius: 15, borderWidth: 1, borderColor: COLORS.line },
+  userTopRow: { flexDirection: "row", alignItems: "center" },
+  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(13,148,136,0.14)" },
+  avatarText: { fontSize: 14, fontWeight: "800", letterSpacing: -0.3 },
+  userInfo: { flex: 1, marginLeft: 11, minWidth: 0 },
+  userName: { fontSize: 14, lineHeight: 19, fontWeight: "700", color: COLORS.ink },
+  phoneLine: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 3 },
+  userPhone: { fontSize: 12, lineHeight: 17, color: COLORS.muted },
+  moreButton: { width: 34, height: 36, alignItems: "center", justifyContent: "center", marginLeft: 4 },
+  cardDivider: { height: 1, backgroundColor: COLORS.surfaceSoft, marginVertical: 11 },
+  userFooter: { flexDirection: "row", alignItems: "center" },
+  tag: { backgroundColor: COLORS.tealSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  tagText: { color: COLORS.teal, fontSize: 10, fontWeight: "700" },
+  openDetail: { marginLeft: "auto", fontSize: 11, color: COLORS.teal, fontWeight: "700" },
+  emptyState: { alignItems: "center", paddingHorizontal: 24, paddingVertical: 42 },
+  emptyIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.tealSoft, marginBottom: 14 },
+  emptyTitle: { color: COLORS.ink, fontSize: 16, fontWeight: "700", textAlign: "center" },
+  emptyText: { marginTop: 6, color: COLORS.muted, fontSize: 13, lineHeight: 19, textAlign: "center" },
+  syncNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, paddingHorizontal: 10, marginTop: 5, backgroundColor: COLORS.surfaceSoft, borderRadius: 11 },
+  syncText: { color: COLORS.muted, fontSize: 11, fontWeight: "600" },
+  modalContainer: { flex: 1, backgroundColor: COLORS.canvas, paddingHorizontal: 16 },
+  modalHeader: { height: 56, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  closeButton: { width: 38, height: 38, alignItems: "center", justifyContent: "center" },
+  modalTitle: { color: COLORS.ink, fontSize: 17, fontWeight: "700" },
+  modalDescription: { color: COLORS.muted, fontSize: 13, marginBottom: 16 },
+  contactList: { paddingTop: 12, paddingBottom: 28 },
+  contactItem: { flexDirection: "row", alignItems: "center", backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.line, borderRadius: 12, padding: 12, marginBottom: 9 },
+  contactAvatar: { backgroundColor: COLORS.tealSoft },
+  alertOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.45)", justifyContent: "center", alignItems: "center", padding: 20 },
+  alertBox: { width: "100%", maxWidth: 400, backgroundColor: COLORS.surface, borderRadius: 16, padding: 21 },
+  alertTitle: { fontSize: 18, fontWeight: "700", color: COLORS.ink, marginBottom: 8 },
+  alertMessage: { fontSize: 14, lineHeight: 21, color: COLORS.muted, marginBottom: 20 },
+  alertButtons: { flexDirection: "row", gap: 10, justifyContent: "flex-end" },
+  alertButton: { minWidth: 105, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 9, alignItems: "center" },
+  alertCancelButton: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.line },
+  alertConfirmButton: { backgroundColor: COLORS.teal },
+  alertDestructiveButton: { backgroundColor: COLORS.red },
+  alertCancelText: { color: COLORS.ink, fontWeight: "600", fontSize: 14 },
+  alertConfirmText: { color: "#FFFFFF", fontWeight: "700", fontSize: 14 },
 })
 
 export default UsersScreen

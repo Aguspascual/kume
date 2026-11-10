@@ -1,0 +1,630 @@
+openapi: 3.1.0
+info:
+  title: KÜME NODUS Monitoring API
+  version: "1"
+  summary: Read-only monitoring contract for NODUS.
+  description: >-
+    Implemented read-only monitoring contract. Examples are anonymized contract
+    fixtures, not live measurements. Unknown values are null; missing sources
+    are explicit. Public DNS/TLS must be provisioned before NODUS can connect.
+servers:
+  - url: https://kume.agromanager.com.ar/api/v1/integrations/nodus
+    description: Public TLS endpoint; DNS and valid certificate must be provisioned before NODUS can connect.
+security:
+  - NodusReadToken: []
+tags:
+  - name: Monitoring
+paths:
+  /summary:
+    get:
+      tags: [Monitoring]
+      operationId: getSummary
+      summary: Current application summary
+      responses:
+        "200":
+          description: Summary snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SummaryResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data:
+                  status: online
+                  node: { id: null, name: null, role: "" }
+                  uptime_seconds: 12345
+                  synchronization: { state: unknown }
+                  resources:
+                    scope: container
+                    cpu: { usage_percent: null }
+                    memory: { used_bytes: null, total_bytes: null, usage_percent: null }
+                    network: { receive_bytes_per_second: null, send_bytes_per_second: null }
+                  users: { active_sessions: 4, unique_today: null, unique_week: null, unique_month: null }
+                  backup: { last_created_at: null, state: not_configured }
+                  deployment: { version: null }
+                sources:
+                  - { name: application_health, state: available, reason: null }
+                  - { name: node_metadata, state: not_configured, reason: "No hay identificador estable del nodo." }
+                  - { name: resource_metrics, state: partial, reason: "La primera muestra todavía no tiene todas las métricas." }
+                  - { name: user_metrics, state: partial, reason: "Las métricas históricas son completas desde el inicio de auditoría." }
+                  - { name: server_backups, state: not_configured, reason: "No hay catálogo de backups del servidor." }
+                  - { name: deployment_metadata, state: not_configured, reason: "No se configuraron versiones de build/despliegue." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+  /history:
+    get:
+      tags: [Monitoring]
+      operationId: getHistory
+      summary: Resource and session history
+      parameters:
+        - name: range
+          in: query
+          required: true
+          description: Version 1 supports only 15m.
+          schema: { type: string, const: "15m" }
+      responses:
+        "200":
+          description: Points sorted chronologically with unique timestamps.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HistoryResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data: { range: "15m", points: [] }
+                sources:
+                  - { name: resource_history, state: not_configured, reason: "No hay recolector ni retención de métricas." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+  /users:
+    get:
+      tags: [Monitoring]
+      operationId: listUsers
+      summary: List KÜME accounts, not customer records
+      description: Email and display_name are personal data; phone is excluded.
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        "200":
+          description: Stable page ordered by created_at ascending, then user_id ascending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsersResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data:
+                  items:
+                    - user_id: "00000000-0000-4000-8000-000000000001"
+                      email: usuario.anonimizado@example.invalid
+                      display_name: "Usuario anonimizado"
+                      created_at: "2026-10-01T12:00:00Z"
+                      active_sessions: null
+                      last_seen_at: null
+                  page: 1
+                  page_size: 100
+                  total_items: 1
+                  total_pages: 1
+                  has_more: false
+                sources:
+                  - { name: account_database, state: available, reason: null }
+                  - { name: session_activity, state: partial, reason: "No se registra last_seen_at." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+  /accesses:
+    get:
+      tags: [Monitoring]
+      operationId: listAccesses
+      summary: List authentication events
+      parameters:
+        - $ref: "#/components/parameters/Since"
+        - $ref: "#/components/parameters/EventLimit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Events sorted by occurred_at ascending, then event_id ascending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessesResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data:
+                  since: "2026-11-10T15:02:05Z"
+                  limit: 50
+                  items: []
+                  has_more: false
+                  next_cursor: null
+                sources:
+                  - { name: access_audit, state: not_configured, reason: "El backend no conserva eventos de acceso." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+  /backups:
+    get:
+      tags: [Monitoring]
+      operationId: listBackups
+      summary: List server-side backup records
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 20 }
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Server backups sorted by created_at descending, then backup_id descending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupsResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data: { limit: 20, items: [], has_more: false, next_cursor: null }
+                sources:
+                  - { name: server_backup_catalog, state: not_configured, reason: "Los backups de la app son locales al dispositivo." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+  /activity:
+    get:
+      tags: [Monitoring]
+      operationId: listActivity
+      summary: List application audit activity
+      parameters:
+        - $ref: "#/components/parameters/Since"
+        - $ref: "#/components/parameters/EventLimit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Events sorted by occurred_at ascending, then event_id ascending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data:
+                  since: "2026-11-10T15:02:05Z"
+                  limit: 50
+                  items: []
+                  has_more: false
+                  next_cursor: null
+                sources:
+                  - { name: activity_audit, state: not_configured, reason: "No existe auditoría de actividad de dominio." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+  /dependencies:
+    get:
+      tags: [Monitoring]
+      operationId: listDependencies
+      summary: List operational dependencies
+      responses:
+        "200":
+          description: Stable dependency inventory sorted by dependency_id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DependenciesResponse" }
+              example:
+                contract_version: "1"
+                application: { id: kume, name: Kume, version: null }
+                generated_at: "2026-11-10T15:04:05Z"
+                data: { items: [] }
+                sources:
+                  - { name: dependency_inventory, state: not_configured, reason: "No existe endpoint de inventario o chequeos." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SourceUnavailable" }
+
+components:
+  securitySchemes:
+    NodusReadToken:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque service token
+      description: Dedicated token with only kume:monitor:read. Never a user session token.
+  parameters:
+    Since:
+      name: since
+      in: query
+      required: true
+      description: Inclusive RFC3339 UTC lower bound ending in Z.
+      schema: { type: string, format: date-time, pattern: "Z$" }
+      example: "2026-11-10T15:02:05Z"
+    EventLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 50, default: 50 }
+      description: Over-maximum values are rejected, not silently clamped.
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque URL-safe continuation cursor, scoped to query and order; expires in 15 minutes.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+  responses:
+    BadRequest:
+      description: Invalid query, range, timestamp, limit, or cursor.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: invalid_request, message: "Parámetro inválido." }
+    Unauthorized:
+      description: Missing, invalid, expired, or revoked Bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: unauthorized, message: "Bearer ausente, inválido o revocado." }
+    Forbidden:
+      description: Token lacks kume:monitor:read permission.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: forbidden, message: "El token no tiene permiso de lectura de monitoreo." }
+    NotFound:
+      description: JSON 404; must not be the net/http text fallback.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: not_found, message: "La ruta o recurso no existe." }
+    RateLimited:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+          description: Seconds before retry.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: rate_limited, message: "Límite de consultas excedido." }
+    InternalError:
+      description: Unexpected error without SQL, stack traces, or secrets.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: internal_error, message: "No se pudo completar la consulta." }
+    SourceUnavailable:
+      description: Required source unavailable; optional source failures should return 200 with null values and source state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: source_unavailable, message: "Una fuente requerida no está disponible." }
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error: { type: string }
+        message: { type: string, description: Safe human-readable message. }
+    Source:
+      type: object
+      additionalProperties: false
+      required: [name, state, reason]
+      properties:
+        name: { type: string, minLength: 1, description: Stable source identifier. }
+        state: { type: string, enum: [available, partial, unavailable, not_configured] }
+        reason: { type: [string, "null"] }
+    Application:
+      type: object
+      additionalProperties: false
+      required: [id, name, version]
+      properties:
+        id: { type: string, const: kume }
+        name: { type: string, const: Kume }
+        version: { type: [string, "null"] }
+    UtcDateTime:
+      type: string
+      format: date-time
+      pattern: "Z$"
+      description: RFC3339 UTC timestamp ending in Z.
+      examples: ["2026-11-10T15:04:05Z"]
+    Envelope:
+      type: object
+      required: [contract_version, application, generated_at, data, sources]
+      properties:
+        contract_version: { type: string, const: "1" }
+        application: { $ref: "#/components/schemas/Application" }
+        generated_at: { $ref: "#/components/schemas/UtcDateTime" }
+        data: { type: object, minProperties: 1 }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/Source" }
+    NullableInteger:
+      type: [integer, "null"]
+      minimum: 0
+    NullableNumber:
+      type: [number, "null"]
+      minimum: 0
+    NullablePercent:
+      type: [number, "null"]
+      minimum: 0
+      maximum: 100
+    SummaryData:
+      type: object
+      required: [status, node, uptime_seconds, synchronization, resources, users, backup, deployment]
+      properties:
+        status: { type: string, enum: [online, offline, unknown], description: Application readiness, not host availability. }
+        node:
+          type: object
+          required: [id, name, role]
+          properties:
+            id: { type: [string, "null"] }
+            name: { type: [string, "null"] }
+            role: { type: string, description: Empty string when unknown. }
+        uptime_seconds: { $ref: "#/components/schemas/NullableInteger" }
+        synchronization:
+          type: object
+          required: [state]
+          properties:
+            state: { type: string, enum: [healthy, degraded, unknown] }
+        resources:
+          type: object
+          required: [scope, cpu, memory, network]
+          properties:
+            scope: { type: string, enum: [application, container, unknown] }
+            cpu:
+              type: object
+              required: [usage_percent]
+              properties:
+                usage_percent: { $ref: "#/components/schemas/NullablePercent" }
+            memory:
+              type: object
+              required: [used_bytes, total_bytes, usage_percent]
+              properties:
+                used_bytes: { $ref: "#/components/schemas/NullableInteger" }
+                total_bytes: { $ref: "#/components/schemas/NullableInteger" }
+                usage_percent: { $ref: "#/components/schemas/NullablePercent" }
+            network:
+              type: object
+              required: [receive_bytes_per_second, send_bytes_per_second]
+              properties:
+                receive_bytes_per_second: { $ref: "#/components/schemas/NullableNumber" }
+                send_bytes_per_second: { $ref: "#/components/schemas/NullableNumber" }
+        users:
+          type: object
+          required: [active_sessions, unique_today, unique_week, unique_month]
+          properties:
+            active_sessions: { $ref: "#/components/schemas/NullableInteger" }
+            unique_today: { $ref: "#/components/schemas/NullableInteger", description: Distinct successful users since UTC day start. }
+            unique_week: { $ref: "#/components/schemas/NullableInteger", description: Distinct successful users since Monday 00:00 UTC. }
+            unique_month: { $ref: "#/components/schemas/NullableInteger", description: Distinct successful users since day 1 00:00 UTC. }
+        backup:
+          type: object
+          required: [last_created_at, state]
+          properties:
+            last_created_at:
+              oneOf: [{ $ref: "#/components/schemas/UtcDateTime" }, { type: "null" }]
+            state: { type: string, enum: [success, failure, in_progress, unknown, not_configured] }
+        deployment:
+          type: object
+          required: [version]
+          properties:
+            version: { type: [string, "null"] }
+    HistoryPoint:
+      type: object
+      required: [observed_at, resources, users]
+      properties:
+        observed_at: { $ref: "#/components/schemas/UtcDateTime" }
+        resources:
+          type: object
+          required: [cpu_usage_percent, memory_used_bytes, memory_total_bytes, network_receive_bytes_per_second, network_send_bytes_per_second]
+          properties:
+            cpu_usage_percent: { $ref: "#/components/schemas/NullablePercent" }
+            memory_used_bytes: { $ref: "#/components/schemas/NullableInteger" }
+            memory_total_bytes: { $ref: "#/components/schemas/NullableInteger" }
+            network_receive_bytes_per_second: { $ref: "#/components/schemas/NullableNumber" }
+            network_send_bytes_per_second: { $ref: "#/components/schemas/NullableNumber" }
+        users:
+          type: object
+          required: [active_sessions]
+          properties:
+            active_sessions: { $ref: "#/components/schemas/NullableInteger" }
+    UserItem:
+      type: object
+      required: [user_id, email, display_name, created_at, active_sessions, last_seen_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        created_at: { $ref: "#/components/schemas/UtcDateTime" }
+        active_sessions: { $ref: "#/components/schemas/NullableInteger" }
+        last_seen_at:
+          oneOf: [{ $ref: "#/components/schemas/UtcDateTime" }, { type: "null" }]
+    PageFields:
+      type: object
+      required: [page, page_size, total_items, total_pages, has_more]
+      properties:
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total_items: { type: integer, minimum: 0 }
+        total_pages: { type: integer, minimum: 0 }
+        has_more: { type: boolean }
+    CursorPageFields:
+      type: object
+      required: [since, limit, has_more, next_cursor]
+      properties:
+        since: { $ref: "#/components/schemas/UtcDateTime" }
+        limit: { type: integer, minimum: 1, maximum: 50 }
+        has_more: { type: boolean }
+        next_cursor: { type: [string, "null"] }
+    AccessEvent:
+      type: object
+      required: [event_id, occurred_at, user_id, source, result, ip_address, reason]
+      properties:
+        event_id: { type: string, format: uuid }
+        occurred_at: { $ref: "#/components/schemas/UtcDateTime" }
+        user_id: { type: [string, "null"], format: uuid }
+        source: { type: string, enum: [password] }
+        result: { type: string, enum: [success, failure] }
+        ip_address: { type: [string, "null"], description: IPv4 or IPv6; null if not captured. }
+        reason: { type: [string, "null"], description: Safe reason only; never a credential. }
+    BackupItem:
+      type: object
+      required: [backup_id, created_at, state, size_bytes, checksum_sha256]
+      properties:
+        backup_id: { type: string, minLength: 1 }
+        created_at: { $ref: "#/components/schemas/UtcDateTime" }
+        state: { type: string, enum: [success, failure, in_progress] }
+        size_bytes: { $ref: "#/components/schemas/NullableInteger" }
+        checksum_sha256: { type: [string, "null"], pattern: "^[a-fA-F0-9]{64}$" }
+    ActivityEvent:
+      type: object
+      required: [event_id, occurred_at, category, title, detail, outcome, result]
+      properties:
+        event_id: { type: string, format: uuid }
+        occurred_at: { $ref: "#/components/schemas/UtcDateTime" }
+        category: { type: string, enum: [auth, account, data, system] }
+        title: { type: string, minLength: 1, maxLength: 160 }
+        detail: { type: [string, "null"], maxLength: 1000 }
+        outcome: { type: string, enum: [success, failure, info], description: Authoritative result. }
+        result: { type: string, enum: [success, failure, info], description: Compatibility alias; must equal outcome. }
+    DependencyItem:
+      type: object
+      required: [dependency_id, name, kind, version, state, required, checked_at, reason]
+      properties:
+        dependency_id: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        kind: { type: string, enum: [service, runtime, library] }
+        version: { type: [string, "null"] }
+        state: { type: string, enum: [healthy, degraded, unavailable, unknown] }
+        required: { type: boolean }
+        checked_at:
+          oneOf: [{ $ref: "#/components/schemas/UtcDateTime" }, { type: "null" }]
+        reason: { type: [string, "null"] }
+    SummaryResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data: { $ref: "#/components/schemas/SummaryData" }
+    HistoryResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [range, points]
+              properties:
+                range: { type: string, const: "15m" }
+                points:
+                  type: array
+                  items: { $ref: "#/components/schemas/HistoryPoint" }
+    UsersResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data:
+              allOf:
+                - { $ref: "#/components/schemas/PageFields" }
+                - type: object
+                  required: [items]
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: "#/components/schemas/UserItem" }
+    AccessesResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data:
+              allOf:
+                - { $ref: "#/components/schemas/CursorPageFields" }
+                - type: object
+                  required: [items]
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: "#/components/schemas/AccessEvent" }
+    BackupsResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [limit, items, has_more, next_cursor]
+              properties:
+                limit: { type: integer, minimum: 1, maximum: 20 }
+                items:
+                  type: array
+                  items: { $ref: "#/components/schemas/BackupItem" }
+                has_more: { type: boolean }
+                next_cursor: { type: [string, "null"] }
+    ActivityResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data:
+              allOf:
+                - { $ref: "#/components/schemas/CursorPageFields" }
+                - type: object
+                  required: [items]
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: "#/components/schemas/ActivityEvent" }
+    DependenciesResponse:
+      allOf:
+        - { $ref: "#/components/schemas/Envelope" }
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items: { $ref: "#/components/schemas/DependencyItem" }
+
